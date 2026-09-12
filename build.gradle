@@ -22,14 +22,26 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
-    implementation 'org.seleniumhq.selenium:selenium-java:4.27.0'
+    implementation 'org.seleniumhq.selenium:selenium-java:4.49.0'
+    runtimeOnly 'org.seleniumhq.selenium:selenium-devtools-v151:4.49.0'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 tasks.named('test') {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags 'cdp-smoke'
+    }
+}
+
+tasks.register('cdpSmokeTest', Test) {
+    description = 'Runs the Chrome DevTools Protocol smoke test against example.com.'
+    group = 'verification'
+    useJUnitPlatform {
+        includeTags 'cdp-smoke'
+    }
+    shouldRunAfter tasks.named('test')
 }
 
 tasks.named('compileJava') {
