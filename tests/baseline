@@ -197,11 +197,13 @@ main() {
   [[ "${chrome_version%%.*}" == "${driver_version%%.*}" ]] || die "Chrome/ChromeDriver major versions differ: $chrome_version vs $driver_version"
 
   local jar_path jar_name output_file started ready_ms request_started request_exit
-  local http_code total_seconds samples request_meta run_status
+  local http_code total_seconds samples request_meta run_status response_file
+  local response_bytes response_valid_json response_json_type response_result_count
   jar_path="$(resolve_jar)"
   jar_name="$(basename -- "$jar_path")"
   output_file="$RUNS_DIR/$(date -u +%Y%m%dT%H%M%SZ).json"
   WORK_DIR="$(mktemp -d "$REPO_ROOT/artifacts/.baseline.XXXXXX")"
+  response_file="$WORK_DIR/response.json"
   trap cleanup EXIT INT TERM
 
   mkdir -p "$RUNS_DIR"
@@ -230,7 +232,7 @@ main() {
   curl --silent --show-error --get \
     --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
     --data-urlencode "q=$QUERY" --data 'page=1' \
-    -o /dev/null -w '%{http_code}|%{time_total}' \
+    -o "$response_file" -w '%{http_code}|%{time_total}' \
     "http://127.0.0.1:$PORT/api/naver-map/search" >"$WORK_DIR/request-meta" 2>"$WORK_DIR/request-error" &
   REQUEST_PID=$!
 
@@ -248,8 +250,17 @@ main() {
   IFS='|' read -r http_code total_seconds <<< "$request_meta"
   [[ -n "${http_code:-}" ]] || http_code=000
   [[ -n "${total_seconds:-}" ]] || total_seconds=null
+  response_bytes="$(wc -c < "$response_file" 2>/dev/null || printf '0')"
+  response_valid_json=false
+  response_json_type="invalid"
+  response_result_count=0
+  if jq empty "$response_file" >/dev/null 2>&1; then
+    response_valid_json=true
+    response_json_type="$(jq -r 'type' "$response_file")"
+    response_result_count="$(jq -r 'if type == "array" then length elif .result.place.list? then (.result.place.list | length) elif .places? then (.places | length) else 0 end' "$response_file")"
+  fi
   run_status="failed"
-  if [[ "$request_exit" -eq 0 && "$http_code" == "200" ]]; then
+  if [[ "$request_exit" -eq 0 && "$http_code" == "200" && "$response_valid_json" == true ]]; then
     run_status="passed"
   fi
 
@@ -267,6 +278,10 @@ main() {
     --argjson port "$PORT" \
     --argjson startup_ms "$ready_ms" \
     --argjson request_exit "$request_exit" \
+    --argjson response_bytes "$response_bytes" \
+    --argjson response_valid_json "$response_valid_json" \
+    --arg response_json_type "$response_json_type" \
+    --argjson response_result_count "$response_result_count" \
     --arg http_code "$http_code" \
     --arg total_seconds "$total_seconds" \
     --arg run_status "$run_status" \
@@ -276,7 +291,7 @@ main() {
     --argjson after_request "$after_request_snapshot" \
     --argjson after_shutdown "$after_shutdown_snapshot" \
     --argjson samples "$samples" \
-    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,headless:true},request:{type:"naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit},timing:{startup_ms:$startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
+    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,headless:true},request:{type:"naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit,response_bytes:$response_bytes,response_valid_json:$response_valid_json,response_json_type:$response_json_type,response_result_count:$response_result_count},timing:{startup_ms:$startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
 
   printf '%s\n' "Wrote $output_file"
   [[ "$run_status" == "passed" ]]
