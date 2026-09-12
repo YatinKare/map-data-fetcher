@@ -11,19 +11,6 @@
 - **CI/CD** : GitHub Actions (scp-action, ssh-action)
 - **Code Quality** : Spotless, google-java-format
 
-## Chrome CDP 호환성 확인
-
-서버의 Chrome 151과 호환되도록 Selenium Java 및 CDP v151 의존성을 4.49.0으로 고정합니다.
-Chrome이 설치된 환경에서 다음 명령으로 독립적인 CDP 스모크 테스트를 실행할 수 있습니다.
-
-```bash
-bash gradlew cdpSmokeTest
-```
-
-테스트는 헤드리스 Chrome으로 `https://example.com/`을 열고 `Network.enable`,
-`Network.responseReceived`, `Network.getResponseBody`가 모두 정상 동작하는지 확인합니다. 일반
-`test` 작업에서는 외부 브라우저 및 네트워크 의존성을 피하기 위해 이 테스트를 제외합니다.
-
 ## 배포 파이프라인
 1. `main` 브랜치 Push 시 GitHub Actions 워크플로우 실행
 2. 가상 환경(Ubuntu)에서 JDK 17 세팅 후 `./gradlew clean bootJar` 로 JAR 파일 빌드
