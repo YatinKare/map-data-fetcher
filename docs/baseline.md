@@ -51,7 +51,7 @@ Run the script after building the application:
 
 ```bash
 ./gradlew bootJar -x test
-./tests/baseline
+./tests/run-script
 ```
 
 Each run writes a timestamped JSON report under `runs/baseline/`. Those generated reports are intentionally ignored and are not committed.

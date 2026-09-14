@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+GO_BIN="${GO_BIN:-$(command -v go || true)}"
+GATEWAY_OUTPUT="${GATEWAY_OUTPUT:-$REPO_ROOT/build/baseline/map-data-gateway}"
+
+die() {
+  printf 'build-baseline: %s\n' "$1" >&2
+  exit 1
+}
+
+[[ -n "$GO_BIN" ]] || die "Go is required; set GO_BIN to the Go executable"
+[[ -x "$GO_BIN" ]] || die "Go binary is not executable: $GO_BIN"
+
+printf '%s\n' 'Building Java application JAR...'
+bash "$REPO_ROOT/gradlew" bootJar -x test
+
+printf '%s\n' 'Building statically linked Linux gateway binary...'
+mkdir -p "$(dirname -- "$GATEWAY_OUTPUT")"
+(
+  cd "$REPO_ROOT/gateway"
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 "$GO_BIN" build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o "$GATEWAY_OUTPUT" \
+    ./cmd/gateway
+)
+
+printf 'Gateway binary: %s\n' "$GATEWAY_OUTPUT"
