@@ -2,3 +2,6 @@
 build/
 out/
 .gradle-local/
+artifacts/*
+!artifacts/.gitkeep
+runs/baseline/*.json

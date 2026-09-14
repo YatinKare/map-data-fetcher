@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Iterator;
@@ -29,6 +30,8 @@ import org.openqa.selenium.logging.LogType;
 import org.openqa.selenium.logging.LoggingPreferences;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.util.UriComponentsBuilder;
 import org.springframework.web.util.UriUtils;
@@ -36,6 +39,10 @@ import org.springframework.web.util.UriUtils;
 @Service
 public class NaverMapSearchService {
 
+  private static final Logger LOGGER = LoggerFactory.getLogger(NaverMapSearchService.class);
+  private static final Duration PAGE_LOAD_TIMEOUT = Duration.ofSeconds(90);
+  private static final Duration ELEMENT_WAIT_TIMEOUT = Duration.ofSeconds(30);
+  private static final Duration SEARCH_RESPONSE_TIMEOUT = Duration.ofSeconds(30);
   private static final String DEFAULT_MAP_CAMERA = "15.00,0,0,0,dh";
   private static final By SEARCH_INPUT_SELECTOR =
       By.cssSelector(
@@ -50,14 +57,18 @@ public class NaverMapSearchService {
   }
 
   public JsonNode search(NaverMapSearchRequest request) {
+    LOGGER.info("Starting Naver keyword search for page {}", request.page());
     ChromeDriver driver = createDriver();
     try {
       driver.executeCdpCommand("Network.enable", Map.of());
       Integer requestedPage = request.page();
       int targetPage = requestedPage == null ? 1 : requestedPage;
       driver.get(buildSearchUrl(request.q()));
-      return captureSearchResults(driver, targetPage);
+      JsonNode result = captureSearchResults(driver, targetPage);
+      LOGGER.info("Naver keyword search completed for page {}", targetPage);
+      return result;
     } catch (Exception exception) {
+      LOGGER.error("Naver keyword search failed", exception);
       throw new IllegalStateException("Failed to capture Naver map search response", exception);
     } finally {
       driver.quit();
@@ -65,6 +76,7 @@ public class NaverMapSearchService {
   }
 
   public JsonNode searchByCoordinate(NaverMapCoordinateSearchRequest request) {
+    LOGGER.info("Starting Naver coordinate search for page {}", request.page());
     ChromeDriver driver = createDriver();
     try {
       driver.executeCdpCommand("Network.enable", Map.of());
@@ -72,8 +84,11 @@ public class NaverMapSearchService {
       int targetPage = requestedPage == null ? 1 : requestedPage;
       driver.get(buildCoordinateUrl(request.x(), request.y()));
       submitSearchKeyword(driver, request.query());
-      return captureSearchResults(driver, targetPage);
+      JsonNode result = captureSearchResults(driver, targetPage);
+      LOGGER.info("Naver coordinate search completed for page {}", targetPage);
+      return result;
     } catch (Exception exception) {
+      LOGGER.error("Naver coordinate search failed", exception);
       throw new IllegalStateException("Failed to capture Naver map search response", exception);
     } finally {
       driver.quit();
@@ -99,6 +114,7 @@ public class NaverMapSearchService {
     options.setCapability("goog:loggingPrefs", loggingPreferences);
 
     ChromeDriver driver = new ChromeDriver(options);
+    driver.manage().timeouts().pageLoadTimeout(PAGE_LOAD_TIMEOUT);
     driver.manage().window().maximize();
     return driver;
   }
@@ -129,7 +145,7 @@ public class NaverMapSearchService {
   }
 
   private WebElement waitForVisibleSearchInput(ChromeDriver driver) {
-    WebDriverWait wait = new WebDriverWait(driver, properties.timeout());
+    WebDriverWait wait = new WebDriverWait(driver, ELEMENT_WAIT_TIMEOUT);
     return wait.until(
         driverInstance ->
             driverInstance.findElements(SEARCH_INPUT_SELECTOR).stream()
@@ -151,7 +167,7 @@ public class NaverMapSearchService {
 
   private JsonNode navigateToPageAndCaptureGraphql(ChromeDriver driver, int targetPage)
       throws Exception {
-    WebDriverWait wait = new WebDriverWait(driver, properties.timeout());
+    WebDriverWait wait = new WebDriverWait(driver, ELEMENT_WAIT_TIMEOUT);
     By paginationContainerSelector = By.xpath("//*[@id='app-root']/div/div[2]/div[2]");
     By pageButtonSelector =
         By.xpath("//*[@id='app-root']/div/div[2]/div[2]/a[normalize-space(text()) != '']");
@@ -203,7 +219,7 @@ public class NaverMapSearchService {
 
   private void switchToSearchIframe(ChromeDriver driver) {
     driver.switchTo().defaultContent();
-    WebDriverWait wait = new WebDriverWait(driver, properties.timeout());
+    WebDriverWait wait = new WebDriverWait(driver, ELEMENT_WAIT_TIMEOUT);
     wait.until(
         ExpectedConditions.frameToBeAvailableAndSwitchToIt(By.cssSelector("iframe#searchIframe")));
   }
@@ -319,7 +335,7 @@ public class NaverMapSearchService {
 
   private String waitForSearchResponseBody(ChromeDriver driver, String responseUrlKeyword)
       throws Exception {
-    Instant deadline = Instant.now().plus(properties.timeout());
+    Instant deadline = Instant.now().plus(SEARCH_RESPONSE_TIMEOUT);
 
     while (Instant.now().isBefore(deadline)) {
       LogEntries entries = driver.manage().logs().get(LogType.PERFORMANCE);

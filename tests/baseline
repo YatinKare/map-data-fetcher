@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run from any directory. The application is built before this script so build
+# time is not included in the startup measurement.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+RUNS_DIR="$REPO_ROOT/runs/baseline"
+LOCAL_BIN="/home/yatink/.local/bin"
+LOCAL_JDK="/home/yatink/.local/jdk-17/usr/lib/jvm/java-17-openjdk-amd64"
+JAVA_BIN="${JAVA_BIN:-$LOCAL_BIN/java}"
+CHROMEDRIVER_BIN="${CHROMEDRIVER_BIN:-$LOCAL_BIN/chromedriver}"
+PORT="${PORT:-8080}"
+QUERY="${1:-노원역 맛집}"
+JAR_PATH="${2:-}"
+READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-60}"
+REQUEST_TIMEOUT_SECONDS="${REQUEST_TIMEOUT_SECONDS:-90}"
+
+export JAVA_HOME="${JAVA_HOME:-$LOCAL_JDK}"
+export PATH="$(dirname -- "$JAVA_BIN"):$LOCAL_BIN:$PATH"
+
+APP_PID=""
+WORK_DIR=""
+REQUEST_PID=""
+
+now_ms() {
+  date +%s%N | cut -c1-13
+}
+
+utc_timestamp() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+die() {
+  printf 'baseline: %s\n' "$1" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
+}
+
+resolve_jar() {
+  if [[ -n "$JAR_PATH" ]]; then
+    [[ -f "$JAR_PATH" ]] || die "JAR not found: $JAR_PATH"
+    printf '%s\n' "$(cd -- "$(dirname -- "$JAR_PATH")" && pwd -P)/$(basename -- "$JAR_PATH")"
+    return
+  fi
+
+  local candidate
+  candidate="$(find "$REPO_ROOT/build/libs" -maxdepth 1 -type f -name '*.jar' ! -name '*-plain.jar' -print -quit 2>/dev/null || true)"
+  [[ -n "$candidate" ]] || die "no application JAR found; run ./gradlew clean bootJar -x test first"
+  printf '%s\n' "$candidate"
+}
+
+system_snapshot() {
+  local memory_line total used available load process_count cpu_count
+  memory_line="$(free -b | awk '/^Mem:/ {print $2, $3, $7}')"
+  read -r total used available <<< "$memory_line"
+  load="$(awk '{print $1}' /proc/loadavg)"
+  process_count="$(ps -e --no-headers | wc -l | tr -d ' ')"
+  cpu_count="$(nproc)"
+
+  jq -cn \
+    --argjson total "${total:-0}" \
+    --argjson used "${used:-0}" \
+    --argjson available "${available:-0}" \
+    --argjson process_count "${process_count:-0}" \
+    --argjson cpu_count "${cpu_count:-0}" \
+    --arg load "${load:-0}" \
+    '{memory_total_bytes:$total,memory_used_bytes:$used,memory_available_bytes:$available,load_average_1m:($load|tonumber),process_count:$process_count,cpu_count:$cpu_count}'
+}
+
+descendant_pids() {
+  local root_pid="$1"
+  ps -eo pid=,ppid= | awk -v root="$root_pid" '
+    { children[$2] = children[$2] " " $1 }
+    function visit(pid,   count, i, child, values) {
+      if (seen[pid]++) return
+      print pid
+      count = split(children[pid], values, " ")
+      for (i = 1; i <= count; i++) {
+        child = values[i]
+        if (child != "") visit(child)
+      }
+    }
+    END { visit(root) }
+  '
+}
+
+process_snapshot() {
+  local root_pid="${1:-}"
+  if [[ -z "$root_pid" || ! -d "/proc/$root_pid" ]]; then
+    jq -cn '{java:{process_count:0,rss_bytes:0,cpu_percent:0,thread_count:0},chrome:{process_count:0,rss_bytes:0,cpu_percent:0,thread_count:0}}'
+    return
+  fi
+
+  local pids rows java_row
+  local all_count all_rss all_cpu all_threads chrome_count chrome_rss chrome_cpu chrome_threads
+  local java_rss java_cpu java_threads
+  pids="$(descendant_pids "$root_pid")"
+  rows="$(ps -eo pid=,comm=,rss=,%cpu=,nlwp= | awk -v ids="$pids" '
+    BEGIN { count = split(ids, wanted, " "); for (i = 1; i <= count; i++) keep[wanted[i]] = 1 }
+    keep[$1] { print }
+  ')"
+
+  IFS='|' read -r all_count all_rss all_cpu all_threads chrome_count chrome_rss chrome_cpu chrome_threads <<< "$(printf '%s\n' "$rows" | awk '
+    $2 ~ /chrome|chromedriver/ { chrome_count++; chrome_rss += $3; chrome_cpu += $4; chrome_threads += $5 }
+    { all_count++; all_rss += $3; all_cpu += $4; all_threads += $5 }
+    END { printf "%d|%d|%.2f|%d|%d|%d|%.2f|%d\n", all_count+0, all_rss+0, all_cpu+0, all_threads+0, chrome_count+0, chrome_rss+0, chrome_cpu+0, chrome_threads+0 }
+  '
+  )"
+
+  java_row="$(ps -p "$root_pid" -o rss=,%cpu=,nlwp= 2>/dev/null || true)"
+  read -r java_rss java_cpu java_threads <<< "$java_row"
+
+  jq -cn \
+    --argjson java_rss "${java_rss:-0}" \
+    --argjson java_cpu "${java_cpu:-0}" \
+    --argjson java_threads "${java_threads:-0}" \
+    --argjson chrome_count "${chrome_count:-0}" \
+    --argjson chrome_rss "${chrome_rss:-0}" \
+    --argjson chrome_cpu "${chrome_cpu:-0}" \
+    --argjson chrome_threads "${chrome_threads:-0}" \
+    '{java:{process_count:1,rss_bytes:($java_rss*1024),cpu_percent:$java_cpu,thread_count:$java_threads},chrome:{process_count:$chrome_count,rss_bytes:($chrome_rss*1024),cpu_percent:$chrome_cpu,thread_count:$chrome_threads}}'
+}
+
+snapshot() {
+  local label="$1"
+  local system process
+  system="$(system_snapshot)"
+  process="$(process_snapshot "$APP_PID")"
+  jq -cn --arg label "$label" --argjson system "$system" --argjson process "$process" \
+    '{label:$label,system:$system,processes:$process}'
+}
+
+sample() {
+  local offset_ms="$1"
+  local system process
+  system="$(system_snapshot)"
+  process="$(process_snapshot "$APP_PID")"
+  jq -cn --arg timestamp "$(utc_timestamp)" --argjson offset_ms "$offset_ms" \
+    --argjson system "$system" --argjson process "$process" \
+    '{timestamp_utc:$timestamp,offset_ms:$offset_ms,system:$system,processes:$process}'
+}
+
+wait_until_ready() {
+  local url="$1"
+  local started="$2"
+  local deadline=$((started + READY_TIMEOUT_SECONDS * 1000))
+  local now
+  while kill -0 "$APP_PID" 2>/dev/null && (( $(now_ms) < deadline )); do
+    if curl -fsS --connect-timeout 1 --max-time 2 -o /dev/null "$url" 2>/dev/null; then
+      now="$(now_ms)"
+      printf '%s\n' "$((now - started))"
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+stop_app() {
+  [[ -z "$APP_PID" ]] && return 0
+  local descendants pid
+  descendants="$(descendant_pids "$APP_PID" 2>/dev/null || true)"
+  kill -TERM "$APP_PID" 2>/dev/null || true
+  wait "$APP_PID" 2>/dev/null || true
+  while read -r pid; do
+    [[ -z "$pid" || "$pid" == "$APP_PID" ]] && continue
+    kill -TERM "$pid" 2>/dev/null || true
+  done <<< "$descendants"
+  APP_PID=""
+}
+
+cleanup() {
+  stop_app
+  if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
+    rm -rf -- "$WORK_DIR"
+  fi
+}
+
+main() {
+  require_command jq
+  require_command curl
+  require_command free
+  require_command ps
+  [[ -x "$JAVA_BIN" ]] || die "Java binary not found: $JAVA_BIN"
+  [[ -x "$CHROMEDRIVER_BIN" ]] || die "ChromeDriver binary not found: $CHROMEDRIVER_BIN"
+  [[ -x /usr/bin/google-chrome ]] || die "Google Chrome not found at /usr/bin/google-chrome"
+
+  local java_version chrome_version driver_version
+  java_version="$($JAVA_BIN -version 2>&1 | awk '/version/ {print; exit}')"
+  chrome_version="$(/usr/bin/google-chrome --version | awk '{print $3}')"
+  driver_version="$($CHROMEDRIVER_BIN --version | awk '{print $2}')"
+  [[ "$java_version" == *'17.'* ]] || die "Java 17 is required: $java_version"
+  [[ "${chrome_version%%.*}" == "${driver_version%%.*}" ]] || die "Chrome/ChromeDriver major versions differ: $chrome_version vs $driver_version"
+
+  local jar_path jar_name output_file started ready_ms request_started request_exit
+  local http_code total_seconds samples request_meta run_status response_file
+  local response_bytes response_valid_json response_json_type response_result_count
+  jar_path="$(resolve_jar)"
+  jar_name="$(basename -- "$jar_path")"
+  output_file="$RUNS_DIR/$(date -u +%Y%m%dT%H%M%SZ).json"
+  WORK_DIR="$(mktemp -d "$REPO_ROOT/artifacts/.baseline.XXXXXX")"
+  response_file="$WORK_DIR/response.json"
+  trap cleanup EXIT INT TERM
+
+  mkdir -p "$RUNS_DIR"
+  printf '%s\n' "Java: $($JAVA_BIN -version 2>&1 | head -n 1)"
+  printf '%s\n' "Chrome: $(/usr/bin/google-chrome --version)"
+  printf '%s\n' "ChromeDriver: $($CHROMEDRIVER_BIN --version)"
+
+  local before_snapshot
+  before_snapshot="$(snapshot before_start)"
+
+  started="$(now_ms)"
+  "$JAVA_BIN" -Dwebdriver.chrome.driver="$CHROMEDRIVER_BIN" -jar "$jar_path" \
+    --server.address=127.0.0.1 \
+    --server.port="$PORT" \
+    --naver.map.selenium.headless=true \
+    >/dev/null 2>&1 &
+  APP_PID=$!
+
+  ready_ms="$(wait_until_ready "http://127.0.0.1:$PORT/v3/api-docs" "$started" || true)"
+  [[ -n "$ready_ms" ]] || die "application did not become ready within ${READY_TIMEOUT_SECONDS}s"
+
+  local ready_snapshot
+  ready_snapshot="$(snapshot ready_idle)"
+  samples='[]'
+  request_started="$(now_ms)"
+  curl --silent --show-error --get \
+    --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
+    --data-urlencode "q=$QUERY" --data 'page=1' \
+    -o "$response_file" -w '%{http_code}|%{time_total}' \
+    "http://127.0.0.1:$PORT/api/naver-map/search" >"$WORK_DIR/request-meta" 2>"$WORK_DIR/request-error" &
+  REQUEST_PID=$!
+
+  while kill -0 "$REQUEST_PID" 2>/dev/null; do
+    request_state="$(ps -o stat= -p "$REQUEST_PID" 2>/dev/null || true)"
+    [[ "$request_state" == Z* ]] && break
+    samples="$(jq -c --argjson item "$(sample "$(($(now_ms) - request_started))")" '. + [$item]' <<< "$samples")"
+    sleep 1
+  done
+  request_exit=0
+  wait "$REQUEST_PID" || request_exit=$?
+  REQUEST_PID=""
+  samples="$(jq -c --argjson item "$(sample "$(($(now_ms) - request_started))")" '. + [$item]' <<< "$samples")"
+  request_meta="$(cat "$WORK_DIR/request-meta" 2>/dev/null || true)"
+  IFS='|' read -r http_code total_seconds <<< "$request_meta"
+  [[ -n "${http_code:-}" ]] || http_code=000
+  [[ -n "${total_seconds:-}" ]] || total_seconds=null
+  response_bytes="$(wc -c < "$response_file" 2>/dev/null || printf '0')"
+  response_valid_json=false
+  response_json_type="invalid"
+  response_result_count=0
+  if jq empty "$response_file" >/dev/null 2>&1; then
+    response_valid_json=true
+    response_json_type="$(jq -r 'type' "$response_file")"
+    response_result_count="$(jq -r 'if type == "array" then length elif .result.place.list? then (.result.place.list | length) elif .places? then (.places | length) else 0 end' "$response_file")"
+  fi
+  run_status="failed"
+  if [[ "$request_exit" -eq 0 && "$http_code" == "200" && "$response_valid_json" == true ]]; then
+    run_status="passed"
+  fi
+
+  local after_request_snapshot after_shutdown_snapshot finished
+  after_request_snapshot="$(snapshot after_request_idle)"
+  stop_app
+  after_shutdown_snapshot="$(snapshot after_shutdown)"
+  finished="$(now_ms)"
+
+  jq -n \
+    --arg schema_version '1' \
+    --arg timestamp "$(utc_timestamp)" \
+    --arg jar "$jar_name" \
+    --arg query "$QUERY" \
+    --argjson port "$PORT" \
+    --argjson startup_ms "$ready_ms" \
+    --argjson request_exit "$request_exit" \
+    --argjson response_bytes "$response_bytes" \
+    --argjson response_valid_json "$response_valid_json" \
+    --arg response_json_type "$response_json_type" \
+    --argjson response_result_count "$response_result_count" \
+    --arg http_code "$http_code" \
+    --arg total_seconds "$total_seconds" \
+    --arg run_status "$run_status" \
+    --argjson total_run_ms "$((finished - started))" \
+    --argjson before "$before_snapshot" \
+    --argjson ready "$ready_snapshot" \
+    --argjson after_request "$after_request_snapshot" \
+    --argjson after_shutdown "$after_shutdown_snapshot" \
+    --argjson samples "$samples" \
+    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,headless:true},request:{type:"naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit,response_bytes:$response_bytes,response_valid_json:$response_valid_json,response_json_type:$response_json_type,response_result_count:$response_result_count},timing:{startup_ms:$startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
+
+  printf '%s\n' "Wrote $output_file"
+  [[ "$run_status" == "passed" ]]
+}
+
+main "$@"

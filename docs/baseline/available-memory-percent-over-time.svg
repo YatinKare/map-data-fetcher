@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="460" viewBox="0 0 900 460">
+  <title>Available system memory during successful Naver request</title>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <style>
+    text { font-family: Arial, sans-serif; fill: #243447; }
+    .grid { stroke: #d9e2ec; stroke-width: 1; }
+    .axis { stroke: #52606d; stroke-width: 1.5; }
+    .line { fill: none; stroke: #059669; stroke-width: 3; }
+  </style>
+  <text x="450" y="28" text-anchor="middle" font-size="20" font-weight="bold">Available system memory during successful Naver request</text>
+  <line class="grid" x1="80" y1="395.0" x2="870" y2="395.0"/>
+  <text x="70" y="400.0" text-anchor="end" font-size="12">37.0%</text>
+  <line class="grid" x1="80" y1="327.0" x2="870" y2="327.0"/>
+  <text x="70" y="332.0" text-anchor="end" font-size="12">39.2%</text>
+  <line class="grid" x1="80" y1="259.0" x2="870" y2="259.0"/>
+  <text x="70" y="264.0" text-anchor="end" font-size="12">41.4%</text>
+  <line class="grid" x1="80" y1="191.0" x2="870" y2="191.0"/>
+  <text x="70" y="196.0" text-anchor="end" font-size="12">43.6%</text>
+  <line class="grid" x1="80" y1="123.0" x2="870" y2="123.0"/>
+  <text x="70" y="128.0" text-anchor="end" font-size="12">45.8%</text>
+  <line class="grid" x1="80" y1="55.0" x2="870" y2="55.0"/>
+  <text x="70" y="60.0" text-anchor="end" font-size="12">48.0%</text>
+  <line class="axis" x1="80" y1="395" x2="870" y2="395"/>
+  <line class="axis" x1="80" y1="55" x2="80" y2="395"/>
+  <line class="axis" x1="80.0" y1="395" x2="80.0" y2="401"/>
+  <text x="80.0" y="419" text-anchor="middle" font-size="12">0s</text>
+  <line class="axis" x1="238.0" y1="395" x2="238.0" y2="401"/>
+  <text x="238.0" y="419" text-anchor="middle" font-size="12">8s</text>
+  <line class="axis" x1="396.0" y1="395" x2="396.0" y2="401"/>
+  <text x="396.0" y="419" text-anchor="middle" font-size="12">16s</text>
+  <line class="axis" x1="554.0" y1="395" x2="554.0" y2="401"/>
+  <text x="554.0" y="419" text-anchor="middle" font-size="12">24s</text>
+  <line class="axis" x1="712.0" y1="395" x2="712.0" y2="401"/>
+  <text x="712.0" y="419" text-anchor="middle" font-size="12">32s</text>
+  <line class="axis" x1="870.0" y1="395" x2="870.0" y2="401"/>
+  <text x="870.0" y="419" text-anchor="middle" font-size="12">41s</text>
+  <text x="475" y="445" text-anchor="middle" font-size="13">Elapsed time</text>
+  <text transform="translate(18 225) rotate(-90)" text-anchor="middle" font-size="13">Available memory / total memory</text>
+  <polyline class="line" points="80.8,139.2 104.0,216.2 127.2,248.1 148.8,255.7 170.6,257.3 192.5,271.3 214.4,278.2 236.2,275.9 258.0,280.3 279.9,280.3 301.6,279.3 323.4,279.4 345.2,267.1 367.1,309.4 389.3,309.4 411.3,309.0 433.1,300.1 454.8,302.1 476.8,300.4 498.7,299.7 520.5,297.9 542.3,297.7 564.1,304.5 586.1,306.7 607.9,306.1 629.7,308.4 651.6,304.6 673.4,305.2 695.3,297.9 717.2,297.9 739.0,297.7 760.8,296.7 782.7,308.4 804.5,309.6 826.4,317.5 848.4,318.6 870.0,208.6"/>
+  <line x1="80" y1="33" x2="104" y2="33" stroke="#059669" stroke-width="3"/>
+  <text x="112" y="38" font-size="14">Available memory %</text>
+</svg>
+

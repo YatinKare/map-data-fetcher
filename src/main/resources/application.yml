@@ -25,4 +25,3 @@ naver:
       response-url-keyword: /p/api/search/allSearch
       graphql-response-url-keyword: https://pcmap-api.place.naver.com/graphql
       headless: false
-      timeout: 15s
