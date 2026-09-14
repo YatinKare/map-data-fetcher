@@ -8,6 +8,8 @@
   - Request/Response : Spring MVC, Jackson
 - **API Docs** : Swagger UI, OpenAPI 3 (springdoc-openapi)
 - **Infra & Process Manager** : Nginx, PM2
+- **Gateway** : Go standard-library HTTP gateway, statically compiled and managed by PM2
+- **Gateway Port (transitional)** : `127.0.0.1:3000`; the Java API remains on `127.0.0.1:8080`
 - **CI/CD** : GitHub Actions (scp-action, ssh-action)
 - **Code Quality** : Spotless, google-java-format
 

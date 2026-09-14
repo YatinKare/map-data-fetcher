@@ -10,10 +10,13 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.logging.Level;
 import org.openqa.selenium.By;
 import org.openqa.selenium.Keys;
@@ -336,6 +339,10 @@ public class NaverMapSearchService {
   private String waitForSearchResponseBody(ChromeDriver driver, String responseUrlKeyword)
       throws Exception {
     Instant deadline = Instant.now().plus(SEARCH_RESPONSE_TIMEOUT);
+    Set<String> matchingRequestIds = new LinkedHashSet<>();
+    Set<String> finishedRequestIds = new HashSet<>();
+    Set<String> failedRequestIds = new HashSet<>();
+    String lastBodyError = "none";
 
     while (Instant.now().isBefore(deadline)) {
       LogEntries entries = driver.manage().logs().get(LogType.PERFORMANCE);
@@ -343,27 +350,36 @@ public class NaverMapSearchService {
       for (LogEntry entry : logs) {
         JsonNode message = objectMapper.readTree(entry.getMessage()).path("message");
         String method = message.path("method").asText();
-        if (!"Network.responseReceived".equals(method)) {
-          continue;
-        }
-
         JsonNode params = message.path("params");
-        String url = params.path("response").path("url").asText();
-        if (!url.contains(responseUrlKeyword)) {
+        String requestId = params.path("requestId").asText();
+        if ("Network.responseReceived".equals(method)) {
+          String url = params.path("response").path("url").asText();
+          if (url.contains(responseUrlKeyword)) {
+            matchingRequestIds.add(requestId);
+          }
+        } else if ("Network.loadingFinished".equals(method)) {
+          finishedRequestIds.add(requestId);
+        } else if ("Network.loadingFailed".equals(method)) {
+          failedRequestIds.add(requestId);
+        }
+      }
+
+      for (String requestId : matchingRequestIds) {
+        if (!finishedRequestIds.contains(requestId) || failedRequestIds.contains(requestId)) {
           continue;
         }
 
-        String requestId = params.path("requestId").asText();
         Map<String, Object> bodyResult;
         try {
           bodyResult =
               driver.executeCdpCommand("Network.getResponseBody", Map.of("requestId", requestId));
-        } catch (WebDriverException ignored) {
+        } catch (WebDriverException exception) {
+          lastBodyError = exception.getMessage();
           continue;
         }
         Object body = bodyResult.get("body");
         if (!(body instanceof String bodyText)) {
-          break;
+          continue;
         }
 
         if (Boolean.TRUE.equals(bodyResult.get("base64Encoded"))) {
@@ -376,6 +392,12 @@ public class NaverMapSearchService {
       Thread.sleep(200L);
     }
 
+    LOGGER.warn(
+        "Naver response capture timed out: matched={}, finished={}, failed={}, lastBodyError={}",
+        matchingRequestIds.size(),
+        finishedRequestIds.size(),
+        failedRequestIds.size(),
+        lastBodyError);
     throw new TimeoutException("Timed out while waiting for Naver search response");
   }
 }

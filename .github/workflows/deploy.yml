@@ -19,11 +19,26 @@ jobs:
           distribution: "temurin"
           cache: gradle
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       - name: Build JAR
         run: ./gradlew clean bootJar -x test
+
+      - name: Build gateway binary
+        working-directory: gateway
+        run: |
+          mkdir -p ../build
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o ../build/map-data-gateway \
+            ./cmd/gateway
 
       - name: Copy JAR to server
         uses: appleboy/scp-action@master
@@ -36,6 +51,28 @@ jobs:
           target: "~/map-data-fetcher/build/libs"
           strip_components: 2
 
+      - name: Copy gateway binary to server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          source: "build/map-data-gateway"
+          target: "~/map-data-fetcher"
+          strip_components: 1
+
+      - name: Copy gateway PM2 config to server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          source: "gateway/ecosystem.config.cjs"
+          target: "~/map-data-fetcher"
+          strip_components: 1
+
       - name: Restart PM2
         uses: appleboy/ssh-action@master
         with:
@@ -45,6 +82,12 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
             cd ~/map-data-fetcher
+
+            mkdir -p gateway
+            mv -f map-data-gateway gateway/map-data-gateway
+            mv -f ecosystem.config.cjs gateway/ecosystem.config.cjs
+            chmod +x gateway/map-data-gateway
+            pm2 startOrRestart gateway/ecosystem.config.cjs --only map-data-gateway --update-env
 
             if pm2 describe map-data-fetcher > /dev/null
             then
@@ -57,5 +100,8 @@ jobs:
                 --server.port=8080 \
                 --naver.map.selenium.headless=true
             fi
+
+            curl --fail --silent --show-error --retry 10 --retry-delay 1 \
+              http://127.0.0.1:3000/healthz > /dev/null
 
             pm2 save
