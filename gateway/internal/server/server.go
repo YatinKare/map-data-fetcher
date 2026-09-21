@@ -29,7 +29,7 @@ func New(cfg config.Config) *Server {
 	mux.HandleFunc(healthPath, func(response http.ResponseWriter, request *http.Request) {
 		handleHealth(response, request, cfg)
 	})
-	mux.HandleFunc("/", handleNotFound)
+	mux.Handle("/", newJavaProxy(cfg.JavaBaseURL))
 
 	return &Server{
 		config: cfg,
@@ -93,13 +93,6 @@ func handleHealth(response http.ResponseWriter, request *http.Request, cfg confi
 		"status":  "ok",
 		"service": cfg.ServiceName,
 		"version": cfg.Version,
-	})
-}
-
-func handleNotFound(response http.ResponseWriter, request *http.Request) {
-	request.Body.Close()
-	writeJSON(response, http.StatusNotFound, map[string]string{
-		"error": "not_found",
 	})
 }
 

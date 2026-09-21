@@ -260,7 +260,10 @@ main() {
 
   started="$(now_ms)"
   gateway_started="$started"
-  GATEWAY_HOST=127.0.0.1 GATEWAY_PORT="$GATEWAY_PORT" "$gateway_bin" \
+  GATEWAY_HOST=127.0.0.1 \
+    GATEWAY_PORT="$GATEWAY_PORT" \
+    GATEWAY_JAVA_BASE_URL="http://127.0.0.1:$PORT" \
+    "$gateway_bin" \
     >"$WORK_DIR/gateway.log" 2>&1 &
   GATEWAY_PID=$!
   gateway_ready_ms="$(wait_until_ready "http://127.0.0.1:$GATEWAY_PORT/healthz" "$GATEWAY_PID" "$gateway_started" || true)"
@@ -286,7 +289,7 @@ main() {
     --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
     --data-urlencode "q=$QUERY" --data 'page=1' \
     -o "$response_file" -w '%{http_code}|%{time_total}' \
-    "http://127.0.0.1:$PORT/api/naver-map/search" >"$WORK_DIR/request-meta" 2>"$WORK_DIR/request-error" &
+    "http://127.0.0.1:$GATEWAY_PORT/api/naver-map/search" >"$WORK_DIR/request-meta" 2>"$WORK_DIR/request-error" &
   REQUEST_PID=$!
 
   while kill -0 "$REQUEST_PID" 2>/dev/null; do
