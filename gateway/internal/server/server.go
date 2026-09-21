@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/YatinKare/map-data-fetcher/gateway/internal/config"
+	"github.com/YatinKare/map-data-fetcher/gateway/internal/worker"
 )
 
 const healthPath = "/healthz"
@@ -21,15 +22,21 @@ type Server struct {
 	httpServer  *http.Server
 	listener    net.Listener
 	serveErrors chan error
+	supervisor  worker.Supervisor
 }
 
 // New creates a gateway server without starting its listener.
 func New(cfg config.Config) *Server {
+	var supervisor worker.Supervisor
+	if cfg.JavaJar != "" {
+		supervisor = worker.NewManager(cfg, http.DefaultClient, log.Default())
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, func(response http.ResponseWriter, request *http.Request) {
 		handleHealth(response, request, cfg)
 	})
-	mux.Handle("/", newJavaProxy(cfg.JavaBaseURL))
+	mux.Handle("/", newJavaProxy(cfg.JavaBaseURL, supervisor))
 
 	return &Server{
 		config: cfg,
@@ -39,6 +46,7 @@ func New(cfg config.Config) *Server {
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 		serveErrors: make(chan error, 1),
+		supervisor:  supervisor,
 	}
 }
 
@@ -78,7 +86,13 @@ func (s *Server) Errors() <-chan error {
 
 // Shutdown gracefully stops accepting requests and waits for active requests.
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.httpServer.Shutdown(ctx)
+	httpErr := s.httpServer.Shutdown(ctx)
+	if s.supervisor == nil {
+		return httpErr
+	}
+
+	workerErr := s.supervisor.Shutdown(ctx)
+	return errors.Join(httpErr, workerErr)
 }
 
 func handleHealth(response http.ResponseWriter, request *http.Request, cfg config.Config) {
