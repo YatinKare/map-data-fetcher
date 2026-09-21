@@ -17,11 +17,12 @@ JAR_PATH="${2:-}"
 GATEWAY_BIN="${GATEWAY_BIN:-$REPO_ROOT/build/baseline/map-data-gateway}"
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-60}"
 REQUEST_TIMEOUT_SECONDS="${REQUEST_TIMEOUT_SECONDS:-120}"
+GATEWAY_JAVA_IDLE_TIMEOUT="${GATEWAY_JAVA_IDLE_TIMEOUT:-5s}"
+IDLE_WAIT_SECONDS="${IDLE_WAIT_SECONDS:-10}"
 
 export JAVA_HOME="${JAVA_HOME:-$LOCAL_JDK}"
 export PATH="$(dirname -- "$JAVA_BIN"):$LOCAL_BIN:$PATH"
 
-APP_PID=""
 GATEWAY_PID=""
 WORK_DIR=""
 REQUEST_PID=""
@@ -103,26 +104,24 @@ process_snapshot() {
     return
   fi
 
-  local pids rows java_row
-  local all_count all_rss all_cpu all_threads chrome_count chrome_rss chrome_cpu chrome_threads
-  local java_rss java_cpu java_threads
+  local pids rows
+  local java_count java_rss java_cpu java_threads
+  local chrome_count chrome_rss chrome_cpu chrome_threads
   pids="$(descendant_pids "$root_pid")"
   rows="$(ps -eo pid=,comm=,rss=,%cpu=,nlwp= | awk -v ids="$pids" '
     BEGIN { count = split(ids, wanted, " "); for (i = 1; i <= count; i++) keep[wanted[i]] = 1 }
     keep[$1] { print }
   ')"
 
-  IFS='|' read -r all_count all_rss all_cpu all_threads chrome_count chrome_rss chrome_cpu chrome_threads <<< "$(printf '%s\n' "$rows" | awk '
+  IFS='|' read -r java_count java_rss java_cpu java_threads chrome_count chrome_rss chrome_cpu chrome_threads <<< "$(printf '%s\n' "$rows" | awk '
+    $2 ~ /java/ { java_count++; java_rss += $3; java_cpu += $4; java_threads += $5 }
     $2 ~ /chrome|chromedriver/ { chrome_count++; chrome_rss += $3; chrome_cpu += $4; chrome_threads += $5 }
-    { all_count++; all_rss += $3; all_cpu += $4; all_threads += $5 }
-    END { printf "%d|%d|%.2f|%d|%d|%d|%.2f|%d\n", all_count+0, all_rss+0, all_cpu+0, all_threads+0, chrome_count+0, chrome_rss+0, chrome_cpu+0, chrome_threads+0 }
+    END { printf "%d|%d|%.2f|%d|%d|%d|%.2f|%d\n", java_count+0, java_rss+0, java_cpu+0, java_threads+0, chrome_count+0, chrome_rss+0, chrome_cpu+0, chrome_threads+0 }
   '
   )"
 
-  java_row="$(ps -p "$root_pid" -o rss=,%cpu=,nlwp= 2>/dev/null || true)"
-  read -r java_rss java_cpu java_threads <<< "$java_row"
-
   jq -cn \
+    --argjson java_count "${java_count:-0}" \
     --argjson java_rss "${java_rss:-0}" \
     --argjson java_cpu "${java_cpu:-0}" \
     --argjson java_threads "${java_threads:-0}" \
@@ -130,7 +129,7 @@ process_snapshot() {
     --argjson chrome_rss "${chrome_rss:-0}" \
     --argjson chrome_cpu "${chrome_cpu:-0}" \
     --argjson chrome_threads "${chrome_threads:-0}" \
-    '{java:{process_count:1,rss_bytes:($java_rss*1024),cpu_percent:$java_cpu,thread_count:$java_threads},chrome:{process_count:$chrome_count,rss_bytes:($chrome_rss*1024),cpu_percent:$chrome_cpu,thread_count:$chrome_threads}}'
+    '{java:{process_count:$java_count,rss_bytes:($java_rss*1024),cpu_percent:$java_cpu,thread_count:$java_threads},chrome:{process_count:$chrome_count,rss_bytes:($chrome_rss*1024),cpu_percent:$chrome_cpu,thread_count:$chrome_threads}}'
 }
 
 gateway_snapshot() {
@@ -156,7 +155,7 @@ snapshot() {
   local label="$1"
   local system process gateway
   system="$(system_snapshot)"
-  process="$(process_snapshot "$APP_PID")"
+  process="$(process_snapshot "$GATEWAY_PID")"
   gateway="$(gateway_snapshot "$GATEWAY_PID")"
   jq -cn --arg label "$label" --argjson system "$system" --argjson process "$process" \
     --argjson gateway "$gateway" \
@@ -167,7 +166,7 @@ sample() {
   local offset_ms="$1"
   local system process gateway
   system="$(system_snapshot)"
-  process="$(process_snapshot "$APP_PID")"
+  process="$(process_snapshot "$GATEWAY_PID")"
   gateway="$(gateway_snapshot "$GATEWAY_PID")"
   jq -cn --arg timestamp "$(utc_timestamp)" --argjson offset_ms "$offset_ms" \
     --argjson system "$system" --argjson process "$process" --argjson gateway "$gateway" \
@@ -204,11 +203,6 @@ stop_pid() {
   done <<< "$descendants"
 }
 
-stop_app() {
-  stop_pid "$APP_PID"
-  APP_PID=""
-}
-
 stop_gateway() {
   stop_pid "$GATEWAY_PID"
   GATEWAY_PID=""
@@ -216,10 +210,22 @@ stop_gateway() {
 
 cleanup() {
   stop_gateway
-  stop_app
   if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
     rm -rf -- "$WORK_DIR"
   fi
+}
+
+wait_for_worker_exit() {
+  local deadline now process
+  deadline=$(( $(now_ms) + IDLE_WAIT_SECONDS * 1000 ))
+  while (( $(now_ms) < deadline )); do
+    process="$(process_snapshot "$GATEWAY_PID")"
+    if jq -e '.java.process_count == 0 and .chrome.process_count == 0' >/dev/null <<< "$process"; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
 }
 
 main() {
@@ -263,23 +269,19 @@ main() {
   GATEWAY_HOST=127.0.0.1 \
     GATEWAY_PORT="$GATEWAY_PORT" \
     GATEWAY_JAVA_BASE_URL="http://127.0.0.1:$PORT" \
+    GATEWAY_JAVA_BIN="$JAVA_BIN" \
+    GATEWAY_JAVA_JAR="$jar_path" \
+    GATEWAY_JAVA_CHROMEDRIVER="$CHROMEDRIVER_BIN" \
+    GATEWAY_JAVA_HEADLESS=true \
+    GATEWAY_JAVA_IDLE_TIMEOUT="$GATEWAY_JAVA_IDLE_TIMEOUT" \
     "$gateway_bin" \
     >"$WORK_DIR/gateway.log" 2>&1 &
   GATEWAY_PID=$!
   gateway_ready_ms="$(wait_until_ready "http://127.0.0.1:$GATEWAY_PORT/healthz" "$GATEWAY_PID" "$gateway_started" || true)"
   [[ -n "$gateway_ready_ms" ]] || die "gateway did not become ready within ${READY_TIMEOUT_SECONDS}s"
 
-  java_started="$(now_ms)"
-  "$JAVA_BIN" -Dwebdriver.chrome.driver="$CHROMEDRIVER_BIN" -jar "$jar_path" \
-    --server.address=127.0.0.1 \
-    --server.port="$PORT" \
-    --naver.map.selenium.headless=true \
-    >/dev/null 2>&1 &
-  APP_PID=$!
-
-  java_ready_ms="$(wait_until_ready "http://127.0.0.1:$PORT/healthz" "$APP_PID" "$java_started" || true)"
   ready_ms="$(( $(now_ms) - started ))"
-  [[ -n "$java_ready_ms" ]] || die "application did not become ready within ${READY_TIMEOUT_SECONDS}s"
+  java_ready_ms=0
 
   local ready_snapshot
   ready_snapshot="$(snapshot ready_idle)"
@@ -320,9 +322,24 @@ main() {
     run_status="passed"
   fi
 
-  local after_request_snapshot after_shutdown_snapshot finished
+  local after_request_snapshot after_idle_shutdown_snapshot after_restart_snapshot
+  local after_restart_idle_shutdown_snapshot after_shutdown_snapshot restart_response_file
+  local restart_http_code finished
   after_request_snapshot="$(snapshot after_request_idle)"
-  stop_app
+  wait_for_worker_exit || die "Java worker did not stop within ${IDLE_WAIT_SECONDS}s"
+  after_idle_shutdown_snapshot="$(snapshot after_idle_shutdown)"
+
+  restart_response_file="$WORK_DIR/restart-response.json"
+  restart_http_code="$(curl --silent --show-error --get \
+    --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
+    -o "$restart_response_file" -w '%{http_code}' \
+    "http://127.0.0.1:$GATEWAY_PORT/api/naver-map/search?page=1" \
+    2>"$WORK_DIR/restart-error" || true)"
+  [[ "$restart_http_code" == "400" ]] || die "worker did not restart for a second request: HTTP $restart_http_code"
+  after_restart_snapshot="$(snapshot after_restart)"
+  wait_for_worker_exit || die "restarted Java worker did not stop within ${IDLE_WAIT_SECONDS}s"
+  after_restart_idle_shutdown_snapshot="$(snapshot after_restart_idle_shutdown)"
+
   stop_gateway
   after_shutdown_snapshot="$(snapshot after_shutdown)"
   finished="$(now_ms)"
@@ -342,6 +359,7 @@ main() {
     --argjson response_valid_json "$response_valid_json" \
     --arg response_json_type "$response_json_type" \
     --argjson response_result_count "$response_result_count" \
+    --argjson restart_http_status "$restart_http_code" \
     --arg http_code "$http_code" \
     --arg total_seconds "$total_seconds" \
     --arg run_status "$run_status" \
@@ -349,9 +367,12 @@ main() {
     --argjson before "$before_snapshot" \
     --argjson ready "$ready_snapshot" \
     --argjson after_request "$after_request_snapshot" \
+    --argjson after_idle_shutdown "$after_idle_shutdown_snapshot" \
+    --argjson after_restart "$after_restart_snapshot" \
+    --argjson after_restart_idle_shutdown "$after_restart_idle_shutdown_snapshot" \
     --argjson after_shutdown "$after_shutdown_snapshot" \
     --argjson samples "$samples" \
-    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,gateway_port:$gateway_port,headless:true},request:{type:"naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit,response_bytes:$response_bytes,response_valid_json:$response_valid_json,response_json_type:$response_json_type,response_result_count:$response_result_count},timing:{startup_ms:$startup_ms,gateway_startup_ms:$gateway_startup_ms,java_startup_ms:$java_startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
+    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,gateway_port:$gateway_port,headless:true},request:{type:"naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit,response_bytes:$response_bytes,response_valid_json:$response_valid_json,response_json_type:$response_json_type,response_result_count:$response_result_count},restart:{http_status:($restart_http_status|tonumber)},timing:{startup_ms:$startup_ms,gateway_startup_ms:$gateway_startup_ms,java_startup_ms:$java_startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_idle_shutdown:$after_idle_shutdown,after_restart:$after_restart,after_restart_idle_shutdown:$after_restart_idle_shutdown,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
 
   printf '%s\n' "Wrote $output_file"
   [[ "$run_status" == "passed" ]]
