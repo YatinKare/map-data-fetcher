@@ -45,7 +45,7 @@ public class NaverMapSearchService {
   private static final Logger LOGGER = LoggerFactory.getLogger(NaverMapSearchService.class);
   private static final Duration PAGE_LOAD_TIMEOUT = Duration.ofSeconds(90);
   private static final Duration ELEMENT_WAIT_TIMEOUT = Duration.ofSeconds(30);
-  private static final Duration SEARCH_RESPONSE_TIMEOUT = Duration.ofSeconds(30);
+  private static final Duration SEARCH_RESPONSE_TIMEOUT = Duration.ofSeconds(60);
   private static final String DEFAULT_MAP_CAMERA = "15.00,0,0,0,dh";
   private static final By SEARCH_INPUT_SELECTOR =
       By.cssSelector(
