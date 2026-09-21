@@ -36,7 +36,7 @@ func New(cfg config.Config) *Server {
 	mux.HandleFunc(healthPath, func(response http.ResponseWriter, request *http.Request) {
 		handleHealth(response, request, cfg)
 	})
-	mux.Handle("/", newJavaProxy(cfg.JavaBaseURL, supervisor))
+	mux.Handle("/", requireBearerToken(cfg.AuthToken, newJavaProxy(cfg.JavaBaseURL, supervisor)))
 
 	return &Server{
 		config: cfg,

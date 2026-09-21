@@ -13,6 +13,8 @@ import (
 	"github.com/YatinKare/map-data-fetcher/gateway/internal/config"
 )
 
+const testAuthToken = "test-token"
+
 func TestServerStartsSuccessfully(t *testing.T) {
 	gateway := startTestServer(t)
 	defer shutdownTestServer(t, gateway)
@@ -97,6 +99,7 @@ func TestGatewayForwardsRequestToJava(t *testing.T) {
 		t.Fatalf("failed to create request: %v", err)
 	}
 	request.Header.Set("X-Test-Header", "forwarded")
+	request.Header.Set("Authorization", "Bearer "+testAuthToken)
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -127,7 +130,12 @@ func TestGatewayReturnsBadGatewayWhenJavaUnavailable(t *testing.T) {
 	gateway := startTestServerWithUpstream(t, upstreamURL)
 	defer shutdownTestServer(t, gateway)
 
-	response, err := http.Get("http://" + gateway.Address() + "/api/test")
+	request, err := http.NewRequest(http.MethodGet, "http://"+gateway.Address()+"/api/test", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+testAuthToken)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("gateway request failed: %v", err)
 	}
@@ -155,6 +163,7 @@ func startTestServerWithUpstream(t *testing.T, upstreamURL *url.URL) *Server {
 	gateway := New(config.Config{
 		Host:            "127.0.0.1",
 		Port:            0,
+		AuthToken:       testAuthToken,
 		JavaBaseURL:     upstreamURL,
 		ServiceName:     "test-gateway",
 		Version:         "test",
