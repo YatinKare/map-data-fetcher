@@ -274,7 +274,7 @@ main() {
     >/dev/null 2>&1 &
   APP_PID=$!
 
-  java_ready_ms="$(wait_until_ready "http://127.0.0.1:$PORT/v3/api-docs" "$APP_PID" "$java_started" || true)"
+  java_ready_ms="$(wait_until_ready "http://127.0.0.1:$PORT/healthz" "$APP_PID" "$java_started" || true)"
   ready_ms="$(( $(now_ms) - started ))"
   [[ -n "$java_ready_ms" ]] || die "application did not become ready within ${READY_TIMEOUT_SECONDS}s"
 
