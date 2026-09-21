@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -14,12 +15,14 @@ const (
 	defaultServiceName     = "map-data-gateway"
 	defaultVersion         = "0.1.0"
 	defaultShutdownTimeout = 5 * time.Second
+	defaultJavaBaseURL     = "http://127.0.0.1:8080"
 )
 
 // Config contains the runtime settings for the gateway process.
 type Config struct {
 	Host            string
 	Port            int
+	JavaBaseURL     *url.URL
 	ServiceName     string
 	Version         string
 	ShutdownTimeout time.Duration
@@ -39,9 +42,15 @@ func LoadFromEnv(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid GATEWAY_SHUTDOWN_TIMEOUT: %w", err)
 	}
 
+	javaBaseURL, err := parseBaseURL(getenv("GATEWAY_JAVA_BASE_URL"), defaultJavaBaseURL)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid GATEWAY_JAVA_BASE_URL: %w", err)
+	}
+
 	return Config{
 		Host:            withDefault(getenv("GATEWAY_HOST"), defaultHost),
 		Port:            port,
+		JavaBaseURL:     javaBaseURL,
 		ServiceName:     withDefault(getenv("GATEWAY_SERVICE_NAME"), defaultServiceName),
 		Version:         withDefault(getenv("GATEWAY_VERSION"), defaultVersion),
 		ShutdownTimeout: shutdownTimeout,
@@ -77,6 +86,26 @@ func parseDuration(value string, fallback time.Duration) (time.Duration, error) 
 	}
 
 	return duration, nil
+}
+
+func parseBaseURL(value string, fallback string) (*url.URL, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = fallback
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return nil, err
+	}
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, fmt.Errorf("must be an HTTP(S) URL with a host")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("must not include a query or fragment")
+	}
+
+	return parsed, nil
 }
 
 func withDefault(value string, fallback string) string {
