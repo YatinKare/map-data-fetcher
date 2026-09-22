@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/YatinKare/map-data-fetcher/gateway/internal/config"
+	"github.com/YatinKare/map-data-fetcher/gateway/internal/mcpserver"
 	"github.com/YatinKare/map-data-fetcher/gateway/internal/worker"
 )
 
@@ -36,7 +37,9 @@ func New(cfg config.Config) *Server {
 	mux.HandleFunc(healthPath, func(response http.ResponseWriter, request *http.Request) {
 		handleHealth(response, request, cfg)
 	})
-	mux.Handle("/", requireBearerToken(cfg.AuthToken, newJavaProxy(cfg.JavaBaseURL, supervisor)))
+	javaClient := worker.NewJavaClient(cfg.JavaBaseURL, http.DefaultClient, supervisor)
+	mcpHandler := mcpserver.NewHandler(javaClient, cfg.Version)
+	mux.Handle("/mcp", requireBearerToken(cfg.AuthToken, mcpHandler))
 
 	return &Server{
 		config: cfg,
