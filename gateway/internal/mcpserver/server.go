@@ -68,8 +68,9 @@ func NewHandler(client NaverSearchClient, version string) http.Handler {
 	return mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{
-			JSONResponse: true,
-			Stateless:    true,
+			JSONResponse:               true,
+			Stateless:                  true,
+			DisableLocalhostProtection: true,
 		},
 	)
 }

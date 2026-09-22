@@ -25,6 +25,7 @@ GATEWAY_JAVA_IDLE_TIMEOUT="${GATEWAY_JAVA_IDLE_TIMEOUT:-5s}"
 IDLE_WAIT_SECONDS="${IDLE_WAIT_SECONDS:-10}"
 MCP_PROTOCOL_VERSION="${MCP_PROTOCOL_VERSION:-2025-11-25}"
 MCP_URL="${MCP_URL:-http://127.0.0.1:$GATEWAY_PORT/mcp}"
+EXTERNAL_MCP_URL="${EXTERNAL_MCP_URL:-}"
 
 export JAVA_HOME="${JAVA_HOME:-$LOCAL_JDK}"
 export PATH="$(dirname -- "$JAVA_BIN"):$LOCAL_BIN:$PATH"
@@ -252,6 +253,33 @@ post_mcp_json() {
     "$MCP_URL"
 }
 
+validate_external_mcp() {
+  [[ -n "$EXTERNAL_MCP_URL" ]] || return 0
+
+  local response_file request_file http_code
+  request_file="$WORK_DIR/external-mcp-initialize.json"
+  response_file="$WORK_DIR/external-mcp-initialize-response.json"
+  jq -cn --arg protocol "$MCP_PROTOCOL_VERSION" \
+    '{jsonrpc:"2.0",id:100,method:"initialize",params:{protocolVersion:$protocol,capabilities:{},clientInfo:{name:"map-data-fetcher-external-check",version:"1"}}}' \
+    > "$request_file"
+
+  http_code="$(curl --silent --show-error \
+    --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
+    -X POST \
+    -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    --data-binary "@$request_file" \
+    -o "$response_file" -w '%{http_code}' \
+    "$EXTERNAL_MCP_URL")"
+  [[ "$http_code" == "200" ]] \
+    || die "external MCP initialize failed: HTTP $http_code ($EXTERNAL_MCP_URL)"
+  jq -e '.result.protocolVersion' "$response_file" >/dev/null \
+    || die "external MCP initialize response did not contain a protocol version"
+
+  printf '%s\n' "External MCP endpoint passed: $EXTERNAL_MCP_URL"
+}
+
 validate_mcp_tool_response() {
   local response_file="$1"
   local raw_file="$2"
@@ -349,6 +377,7 @@ main() {
     (.result.tools | map(.name) | index("naver_map_coordinate_search") != null)
   ' "$mcp_tools_response" >/dev/null \
     || die "MCP tools/list did not expose both Naver search tools"
+  validate_external_mcp
 
   ready_ms="$(( $(now_ms) - started ))"
   java_ready_ms=0
