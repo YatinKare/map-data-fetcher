@@ -20,6 +20,8 @@ READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-60}"
 REQUEST_TIMEOUT_SECONDS="${REQUEST_TIMEOUT_SECONDS:-120}"
 GATEWAY_JAVA_IDLE_TIMEOUT="${GATEWAY_JAVA_IDLE_TIMEOUT:-5s}"
 IDLE_WAIT_SECONDS="${IDLE_WAIT_SECONDS:-10}"
+MCP_PROTOCOL_VERSION="${MCP_PROTOCOL_VERSION:-2025-11-25}"
+MCP_URL="${MCP_URL:-http://127.0.0.1:$GATEWAY_PORT/mcp}"
 
 export JAVA_HOME="${JAVA_HOME:-$LOCAL_JDK}"
 export PATH="$(dirname -- "$JAVA_BIN"):$LOCAL_BIN:$PATH"
@@ -229,6 +231,38 @@ wait_for_worker_exit() {
   return 1
 }
 
+post_mcp_json() {
+  local request_file="$1"
+  local response_file="$2"
+  local write_format='%{http_code}'
+  if [[ "${3:-}" == "timed" ]]; then
+    write_format='%{http_code}|%{time_total}'
+  fi
+  curl --silent --show-error \
+    --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
+    -X POST \
+    -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    --data-binary "@$request_file" \
+    -o "$response_file" -w "$write_format" \
+    "$MCP_URL"
+}
+
+validate_mcp_tool_response() {
+  local response_file="$1"
+  local raw_file="$2"
+  jq -e '
+    .jsonrpc == "2.0" and
+    (.error? | not) and
+    (.result.isError != true) and
+    (.result.content | length > 0) and
+    (.result.content[0].type == "text")
+  ' "$response_file" >/dev/null
+  jq -er '.result.content[0].text' "$response_file" > "$raw_file"
+  jq empty "$raw_file" >/dev/null
+}
+
 main() {
   require_command jq
   require_command curl
@@ -248,6 +282,9 @@ main() {
   local jar_path jar_name output_file started ready_ms request_started request_exit
   local http_code total_seconds samples request_meta run_status response_file
   local response_bytes response_valid_json response_json_type response_result_count
+  local mcp_init_request mcp_init_response mcp_tools_request mcp_tools_response
+  local mcp_notification_request mcp_request_file mcp_raw_file mcp_http_code
+  local restart_request_file restart_raw_file
   jar_path="$(resolve_jar)"
   gateway_bin="$(resolve_gateway)"
   jar_name="$(basename -- "$jar_path")"
@@ -282,6 +319,31 @@ main() {
   gateway_ready_ms="$(wait_until_ready "http://127.0.0.1:$GATEWAY_PORT/healthz" "$GATEWAY_PID" "$gateway_started" || true)"
   [[ -n "$gateway_ready_ms" ]] || die "gateway did not become ready within ${READY_TIMEOUT_SECONDS}s"
 
+  mcp_init_request="$WORK_DIR/mcp-initialize.json"
+  mcp_init_response="$WORK_DIR/mcp-initialize-response.json"
+  jq -cn --arg protocol "$MCP_PROTOCOL_VERSION" \
+    '{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:$protocol,capabilities:{},clientInfo:{name:"map-data-fetcher-run-script",version:"1"}}}' \
+    > "$mcp_init_request"
+  mcp_http_code="$(post_mcp_json "$mcp_init_request" "$mcp_init_response")"
+  [[ "$mcp_http_code" == "200" ]] || die "MCP initialize failed: HTTP $mcp_http_code"
+  jq -e '.result.protocolVersion' "$mcp_init_response" >/dev/null \
+    || die "MCP initialize response did not contain a protocol version"
+
+  mcp_notification_request="$WORK_DIR/mcp-initialized.json"
+  jq -cn '{jsonrpc:"2.0",method:"notifications/initialized",params:{}}' \
+    > "$mcp_notification_request"
+  mcp_http_code="$(post_mcp_json "$mcp_notification_request" "$WORK_DIR/mcp-initialized-response.json")"
+  [[ "$mcp_http_code" == "200" || "$mcp_http_code" == "202" || "$mcp_http_code" == "204" ]] \
+    || die "MCP initialized notification failed: HTTP $mcp_http_code"
+
+  mcp_tools_request="$WORK_DIR/mcp-tools-list.json"
+  mcp_tools_response="$WORK_DIR/mcp-tools-list-response.json"
+  jq -cn '{jsonrpc:"2.0",id:2,method:"tools/list",params:{}}' > "$mcp_tools_request"
+  mcp_http_code="$(post_mcp_json "$mcp_tools_request" "$mcp_tools_response")"
+  [[ "$mcp_http_code" == "200" ]] || die "MCP tools/list failed: HTTP $mcp_http_code"
+  jq -e '.result.tools | map(.name) | index("naver_map_search") != null' "$mcp_tools_response" >/dev/null \
+    || die "MCP tools/list did not expose naver_map_search"
+
   ready_ms="$(( $(now_ms) - started ))"
   java_ready_ms=0
 
@@ -289,12 +351,12 @@ main() {
   ready_snapshot="$(snapshot ready_idle)"
   samples='[]'
   request_started="$(now_ms)"
-  curl --silent --show-error --get \
-    --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
-    -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
-    --data-urlencode "q=$QUERY" --data 'page=1' \
-    -o "$response_file" -w '%{http_code}|%{time_total}' \
-    "http://127.0.0.1:$GATEWAY_PORT/api/naver-map/search" >"$WORK_DIR/request-meta" 2>"$WORK_DIR/request-error" &
+  mcp_request_file="$WORK_DIR/mcp-search-request.json"
+  mcp_raw_file="$WORK_DIR/mcp-search-raw.json"
+  jq -cn --arg query "$QUERY" \
+    '{jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"naver_map_search",arguments:{query:$query,page:1}}}' \
+    > "$mcp_request_file"
+  post_mcp_json "$mcp_request_file" "$response_file" timed >"$WORK_DIR/request-meta" 2>"$WORK_DIR/request-error" &
   REQUEST_PID=$!
 
   while kill -0 "$REQUEST_PID" 2>/dev/null; do
@@ -315,13 +377,13 @@ main() {
   response_valid_json=false
   response_json_type="invalid"
   response_result_count=0
-  if jq empty "$response_file" >/dev/null 2>&1; then
+  if validate_mcp_tool_response "$response_file" "$mcp_raw_file" >/dev/null 2>&1; then
     response_valid_json=true
-    response_json_type="$(jq -r 'type' "$response_file")"
-    response_result_count="$(jq -r 'if type == "array" then length elif .result.place.list? then (.result.place.list | length) elif .places? then (.places | length) else 0 end' "$response_file")"
+    response_json_type="$(jq -r 'type' "$mcp_raw_file")"
+    response_result_count="$(jq -r 'if type == "array" then length else 0 end' "$mcp_raw_file")"
   fi
   run_status="failed"
-  if [[ "$request_exit" -eq 0 && "$http_code" == "200" && "$response_valid_json" == true ]]; then
+  if [[ "$request_exit" -eq 0 && "$http_code" == "200" && "$response_valid_json" == true && "$response_json_type" == "array" ]]; then
     run_status="passed"
   fi
 
@@ -333,13 +395,16 @@ main() {
   after_idle_shutdown_snapshot="$(snapshot after_idle_shutdown)"
 
   restart_response_file="$WORK_DIR/restart-response.json"
-  restart_http_code="$(curl --silent --show-error --get \
-    --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
-    -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
-    -o "$restart_response_file" -w '%{http_code}' \
-    "http://127.0.0.1:$GATEWAY_PORT/api/naver-map/search?page=1" \
+  restart_request_file="$WORK_DIR/mcp-restart-request.json"
+  restart_raw_file="$WORK_DIR/mcp-restart-raw.json"
+  jq -cn --arg query "$QUERY" \
+    '{jsonrpc:"2.0",id:4,method:"tools/call",params:{name:"naver_map_search",arguments:{query:$query,page:1}}}' \
+    > "$restart_request_file"
+  restart_http_code="$(post_mcp_json "$restart_request_file" "$restart_response_file" \
     2>"$WORK_DIR/restart-error" || true)"
-  [[ "$restart_http_code" == "400" ]] || die "worker did not restart for a second request: HTTP $restart_http_code"
+  [[ "$restart_http_code" == "200" ]] || die "worker did not restart for a second MCP request: HTTP $restart_http_code"
+  validate_mcp_tool_response "$restart_response_file" "$restart_raw_file" \
+    || die "second MCP request did not return valid raw JSON"
   after_restart_snapshot="$(snapshot after_restart)"
   wait_for_worker_exit || die "restarted Java worker did not stop within ${IDLE_WAIT_SECONDS}s"
   after_restart_idle_shutdown_snapshot="$(snapshot after_restart_idle_shutdown)"
@@ -376,7 +441,7 @@ main() {
     --argjson after_restart_idle_shutdown "$after_restart_idle_shutdown_snapshot" \
     --argjson after_shutdown "$after_shutdown_snapshot" \
     --argjson samples "$samples" \
-    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,gateway_port:$gateway_port,headless:true},request:{type:"naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit,response_bytes:$response_bytes,response_valid_json:$response_valid_json,response_json_type:$response_json_type,response_result_count:$response_result_count},restart:{http_status:($restart_http_status|tonumber)},timing:{startup_ms:$startup_ms,gateway_startup_ms:$gateway_startup_ms,java_startup_ms:$java_startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_idle_shutdown:$after_idle_shutdown,after_restart:$after_restart,after_restart_idle_shutdown:$after_restart_idle_shutdown,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
+    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,gateway_port:$gateway_port,headless:true},request:{type:"mcp_naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit,response_bytes:$response_bytes,response_valid_json:$response_valid_json,response_json_type:$response_json_type,response_result_count:$response_result_count},restart:{http_status:($restart_http_status|tonumber)},timing:{startup_ms:$startup_ms,gateway_startup_ms:$gateway_startup_ms,java_startup_ms:$java_startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_idle_shutdown:$after_idle_shutdown,after_restart:$after_restart,after_restart_idle_shutdown:$after_restart_idle_shutdown,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
 
   printf '%s\n' "Wrote $output_file"
   [[ "$run_status" == "passed" ]]

@@ -8,10 +8,10 @@
   - Request/Response : Spring MVC, Jackson
 - **API Docs** : Swagger UI, OpenAPI 3 (springdoc-openapi)
 - **Infra & Process Manager** : Nginx, PM2
-- **Gateway** : Go standard-library HTTP gateway, statically compiled and managed by PM2
+- **Gateway** : Go MCP/health gateway, statically compiled and managed by PM2
 - **Gateway Port (transitional)** : `127.0.0.1:3000`; the Java API remains on `127.0.0.1:8080`
-- **Gateway upstream** : `GATEWAY_JAVA_BASE_URL` defaults to `http://127.0.0.1:8080`
-- **Gateway auth** : map requests require `Authorization: Bearer new-token123`; configure `GATEWAY_AUTH_TOKEN`
+- **Gateway MCP endpoint** : `/mcp`; tool calls require `Authorization: Bearer new-token123`; configure `GATEWAY_AUTH_TOKEN`
+- **Gateway upstream** : the MCP gateway calls the private Java API at `GATEWAY_JAVA_BASE_URL`, defaulting to `http://127.0.0.1:8080`
 - **CI/CD** : GitHub Actions (scp-action, ssh-action)
 - **Code Quality** : Spotless, google-java-format
 
@@ -24,15 +24,20 @@
 
 ## Swagger API 문서
 
-The gateway serves `/healthz` directly and forwards the map API requests to the private Java worker. For example:
+The Java worker exposes the map REST APIs privately on port `8080`. The gateway exposes `/healthz` and the authenticated MCP endpoint on port `3000`.
+
+After the MCP client has initialized, the tool is called through Streamable HTTP:
 
 ```bash
-curl --get \
+curl --request POST \
   --header "Authorization: Bearer new-token123" \
-  --data-urlencode "q=노원역 맛집" \
-  --data "page=1" \
-  http://127.0.0.1:3000/api/naver-map/search
+  --header "Content-Type: application/json" \
+  --header "Accept: application/json, text/event-stream" \
+  --data '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"naver_map_search","arguments":{"query":"노원역 맛집","page":1}}}' \
+  http://127.0.0.1:3000/mcp
 ```
+
+The Java REST endpoints below are available only on the private Java worker port.
 
 | Method | Path | Summary | Tag |
 | --- | --- | --- | --- |
