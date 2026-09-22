@@ -11,6 +11,7 @@
 - **Gateway** : Go standard-library HTTP gateway, statically compiled and managed by PM2
 - **Gateway Port (transitional)** : `127.0.0.1:3000`; the Java API remains on `127.0.0.1:8080`
 - **Gateway upstream** : `GATEWAY_JAVA_BASE_URL` defaults to `http://127.0.0.1:8080`
+- **Gateway auth** : map requests require `Authorization: Bearer new-token123`; configure `GATEWAY_AUTH_TOKEN`
 - **CI/CD** : GitHub Actions (scp-action, ssh-action)
 - **Code Quality** : Spotless, google-java-format
 
@@ -27,6 +28,7 @@ The gateway serves `/healthz` directly and forwards the map API requests to the 
 
 ```bash
 curl --get \
+  --header "Authorization: Bearer new-token123" \
   --data-urlencode "q=노원역 맛집" \
   --data "page=1" \
   http://127.0.0.1:3000/api/naver-map/search

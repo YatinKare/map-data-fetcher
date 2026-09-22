@@ -12,6 +12,7 @@ JAVA_BIN="${JAVA_BIN:-$LOCAL_BIN/java}"
 CHROMEDRIVER_BIN="${CHROMEDRIVER_BIN:-$LOCAL_BIN/chromedriver}"
 PORT="${PORT:-8080}"
 GATEWAY_PORT="${GATEWAY_PORT:-3000}"
+GATEWAY_AUTH_TOKEN="${GATEWAY_AUTH_TOKEN:-new-token123}"
 QUERY="${1:-노원역 맛집}"
 JAR_PATH="${2:-}"
 GATEWAY_BIN="${GATEWAY_BIN:-$REPO_ROOT/build/baseline/map-data-gateway}"
@@ -268,6 +269,7 @@ main() {
   gateway_started="$started"
   GATEWAY_HOST=127.0.0.1 \
     GATEWAY_PORT="$GATEWAY_PORT" \
+    GATEWAY_AUTH_TOKEN="$GATEWAY_AUTH_TOKEN" \
     GATEWAY_JAVA_BASE_URL="http://127.0.0.1:$PORT" \
     GATEWAY_JAVA_BIN="$JAVA_BIN" \
     GATEWAY_JAVA_JAR="$jar_path" \
@@ -289,6 +291,7 @@ main() {
   request_started="$(now_ms)"
   curl --silent --show-error --get \
     --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
+    -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
     --data-urlencode "q=$QUERY" --data 'page=1' \
     -o "$response_file" -w '%{http_code}|%{time_total}' \
     "http://127.0.0.1:$GATEWAY_PORT/api/naver-map/search" >"$WORK_DIR/request-meta" 2>"$WORK_DIR/request-error" &
@@ -332,6 +335,7 @@ main() {
   restart_response_file="$WORK_DIR/restart-response.json"
   restart_http_code="$(curl --silent --show-error --get \
     --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
+    -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
     -o "$restart_response_file" -w '%{http_code}' \
     "http://127.0.0.1:$GATEWAY_PORT/api/naver-map/search?page=1" \
     2>"$WORK_DIR/restart-error" || true)"

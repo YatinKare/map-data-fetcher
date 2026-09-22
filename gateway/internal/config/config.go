@@ -26,6 +26,7 @@ const (
 type Config struct {
 	Host                string
 	Port                int
+	AuthToken           string
 	JavaBaseURL         *url.URL
 	JavaBin             string
 	JavaJar             string
@@ -41,6 +42,11 @@ type Config struct {
 
 // LoadFromEnv loads gateway configuration from environment variables.
 func LoadFromEnv(getenv func(string) string) (Config, error) {
+	authToken := strings.TrimSpace(getenv("GATEWAY_AUTH_TOKEN"))
+	if authToken == "" {
+		return Config{}, fmt.Errorf("GATEWAY_AUTH_TOKEN must be configured")
+	}
+
 	port, err := parsePort(getenv("GATEWAY_PORT"))
 	if err != nil {
 		return Config{}, err
@@ -87,6 +93,7 @@ func LoadFromEnv(getenv func(string) string) (Config, error) {
 	return Config{
 		Host:                withDefault(getenv("GATEWAY_HOST"), defaultHost),
 		Port:                port,
+		AuthToken:           authToken,
 		JavaBaseURL:         javaBaseURL,
 		JavaBin:             withDefault(getenv("GATEWAY_JAVA_BIN"), defaultJavaBin),
 		JavaJar:             strings.TrimSpace(getenv("GATEWAY_JAVA_JAR")),
