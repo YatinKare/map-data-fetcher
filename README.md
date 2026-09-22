@@ -37,6 +37,22 @@ curl --request POST \
   http://127.0.0.1:3000/mcp
 ```
 
+The gateway exposes two read-only Naver MCP tools:
+
+- `naver_map_search`: keyword search using `query` and optional `page`.
+- `naver_map_coordinate_search`: coordinate-based search using `query`, `x` (longitude), `y` (latitude), and optional `page`.
+
+Coordinate search example:
+
+```bash
+curl --request POST \
+  --header "Authorization: Bearer new-token123" \
+  --header "Content-Type: application/json" \
+  --header "Accept: application/json, text/event-stream" \
+  --data '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"naver_map_coordinate_search","arguments":{"query":"카페","x":127.105649,"y":37.64349,"page":1}}}' \
+  http://127.0.0.1:3000/mcp
+```
+
 The Java REST endpoints below are available only on the private Java worker port.
 
 | Method | Path | Summary | Tag |

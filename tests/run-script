@@ -14,6 +14,9 @@ PORT="${PORT:-8080}"
 GATEWAY_PORT="${GATEWAY_PORT:-3000}"
 GATEWAY_AUTH_TOKEN="${GATEWAY_AUTH_TOKEN:-new-token123}"
 QUERY="${1:-노원역 맛집}"
+COORDINATE_QUERY="${COORDINATE_QUERY:-카페}"
+COORDINATE_X="${COORDINATE_X:-127.105649}"
+COORDINATE_Y="${COORDINATE_Y:-37.64349}"
 JAR_PATH="${2:-}"
 GATEWAY_BIN="${GATEWAY_BIN:-$REPO_ROOT/build/baseline/map-data-gateway}"
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-60}"
@@ -341,8 +344,11 @@ main() {
   jq -cn '{jsonrpc:"2.0",id:2,method:"tools/list",params:{}}' > "$mcp_tools_request"
   mcp_http_code="$(post_mcp_json "$mcp_tools_request" "$mcp_tools_response")"
   [[ "$mcp_http_code" == "200" ]] || die "MCP tools/list failed: HTTP $mcp_http_code"
-  jq -e '.result.tools | map(.name) | index("naver_map_search") != null' "$mcp_tools_response" >/dev/null \
-    || die "MCP tools/list did not expose naver_map_search"
+  jq -e '
+    (.result.tools | map(.name) | index("naver_map_search") != null) and
+    (.result.tools | map(.name) | index("naver_map_coordinate_search") != null)
+  ' "$mcp_tools_response" >/dev/null \
+    || die "MCP tools/list did not expose both Naver search tools"
 
   ready_ms="$(( $(now_ms) - started ))"
   java_ready_ms=0
@@ -389,7 +395,7 @@ main() {
 
   local after_request_snapshot after_idle_shutdown_snapshot after_restart_snapshot
   local after_restart_idle_shutdown_snapshot after_shutdown_snapshot restart_response_file
-  local restart_http_code finished
+  local restart_http_code coordinate_http_code finished
   after_request_snapshot="$(snapshot after_request_idle)"
   wait_for_worker_exit || die "Java worker did not stop within ${IDLE_WAIT_SECONDS}s"
   after_idle_shutdown_snapshot="$(snapshot after_idle_shutdown)"
@@ -408,6 +414,17 @@ main() {
   after_restart_snapshot="$(snapshot after_restart)"
   wait_for_worker_exit || die "restarted Java worker did not stop within ${IDLE_WAIT_SECONDS}s"
   after_restart_idle_shutdown_snapshot="$(snapshot after_restart_idle_shutdown)"
+
+  coordinate_response_file="$WORK_DIR/mcp-coordinate-response.json"
+  coordinate_request_file="$WORK_DIR/mcp-coordinate-request.json"
+  coordinate_raw_file="$WORK_DIR/mcp-coordinate-raw.json"
+  jq -cn --arg query "$COORDINATE_QUERY" --argjson x "$COORDINATE_X" --argjson y "$COORDINATE_Y" \
+    '{jsonrpc:"2.0",id:5,method:"tools/call",params:{name:"naver_map_coordinate_search",arguments:{query:$query,x:$x,y:$y,page:1}}}' \
+    > "$coordinate_request_file"
+  coordinate_http_code="$(post_mcp_json "$coordinate_request_file" "$coordinate_response_file" || true)"
+  [[ "$coordinate_http_code" == "200" ]] || die "coordinate MCP request failed: HTTP $coordinate_http_code"
+  validate_mcp_tool_response "$coordinate_response_file" "$coordinate_raw_file" \
+    || die "coordinate MCP request did not return valid raw JSON"
 
   stop_gateway
   after_shutdown_snapshot="$(snapshot after_shutdown)"

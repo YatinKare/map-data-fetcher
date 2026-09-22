@@ -35,6 +35,33 @@ func NewJavaClient(baseURL *url.URL, httpClient *http.Client, supervisor Supervi
 
 // SearchNaver retrieves the raw JSON returned by Java.
 func (c *JavaClient) SearchNaver(ctx context.Context, query string, page int) ([]byte, error) {
+	queryValues := make(url.Values)
+	queryValues.Set("q", query)
+	queryValues.Set("page", strconv.Itoa(page))
+	return c.getNaverJSON(ctx, "api/naver-map/search", queryValues)
+}
+
+// SearchNaverByCoordinate retrieves raw JSON from Java's coordinate search endpoint.
+func (c *JavaClient) SearchNaverByCoordinate(
+	ctx context.Context,
+	query string,
+	x float64,
+	y float64,
+	page int,
+) ([]byte, error) {
+	queryValues := make(url.Values)
+	queryValues.Set("query", query)
+	queryValues.Set("x", strconv.FormatFloat(x, 'f', -1, 64))
+	queryValues.Set("y", strconv.FormatFloat(y, 'f', -1, 64))
+	queryValues.Set("page", strconv.Itoa(page))
+	return c.getNaverJSON(ctx, "api/naver-map/coordinate", queryValues)
+}
+
+func (c *JavaClient) getNaverJSON(
+	ctx context.Context,
+	endpoint string,
+	queryValues url.Values,
+) ([]byte, error) {
 	var release func()
 	if c.supervisor != nil {
 		var err error
@@ -46,10 +73,7 @@ func (c *JavaClient) SearchNaver(ctx context.Context, query string, page int) ([
 	}
 
 	target := *c.baseURL
-	target.Path = path.Join("/", target.Path, "api/naver-map/search")
-	queryValues := target.Query()
-	queryValues.Set("q", query)
-	queryValues.Set("page", strconv.Itoa(page))
+	target.Path = path.Join("/", target.Path, endpoint)
 	target.RawQuery = queryValues.Encode()
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
