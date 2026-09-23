@@ -39,7 +39,11 @@ func New(cfg config.Config) *Server {
 	})
 	javaClient := worker.NewJavaClient(cfg.JavaBaseURL, http.DefaultClient, supervisor)
 	mcpHandler := mcpserver.NewHandler(javaClient, cfg.Version)
-	mux.Handle("/mcp", requireBearerToken(cfg.AuthToken, mcpHandler))
+	if cfg.AuthMode == config.AuthModeNone {
+		mux.Handle("/mcp", mcpHandler)
+	} else {
+		mux.Handle("/mcp", requireBearerToken(cfg.AuthToken, mcpHandler))
+	}
 
 	return &Server{
 		config: cfg,

@@ -12,6 +12,7 @@ JAVA_BIN="${JAVA_BIN:-$LOCAL_BIN/java}"
 CHROMEDRIVER_BIN="${CHROMEDRIVER_BIN:-$LOCAL_BIN/chromedriver}"
 PORT="${PORT:-8080}"
 GATEWAY_PORT="${GATEWAY_PORT:-3000}"
+GATEWAY_AUTH_MODE="${GATEWAY_AUTH_MODE:-none}"
 GATEWAY_AUTH_TOKEN="${GATEWAY_AUTH_TOKEN:-new-token123}"
 QUERY="${1:-노원역 맛집}"
 COORDINATE_QUERY="${COORDINATE_QUERY:-카페}"
@@ -243,10 +244,14 @@ post_mcp_json() {
   if [[ "${3:-}" == "timed" ]]; then
     write_format='%{http_code}|%{time_total}'
   fi
+  local auth_args=()
+  if [[ "$GATEWAY_AUTH_MODE" == "required" ]]; then
+    auth_args=(-H "Authorization: Bearer $GATEWAY_AUTH_TOKEN")
+  fi
   curl --silent --show-error \
     --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
     -X POST \
-    -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
+    "${auth_args[@]}" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
     --data-binary "@$request_file" \
@@ -264,10 +269,14 @@ validate_external_mcp() {
     '{jsonrpc:"2.0",id:100,method:"initialize",params:{protocolVersion:$protocol,capabilities:{},clientInfo:{name:"map-data-fetcher-external-check",version:"1"}}}' \
     > "$request_file"
 
+  local auth_args=()
+  if [[ "$GATEWAY_AUTH_MODE" == "required" ]]; then
+    auth_args=(-H "Authorization: Bearer $GATEWAY_AUTH_TOKEN")
+  fi
   http_code="$(curl --silent --show-error \
     --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
     -X POST \
-    -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
+    "${auth_args[@]}" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
     --data-binary "@$request_file" \
@@ -351,6 +360,7 @@ main() {
   gateway_started="$started"
   GATEWAY_HOST=127.0.0.1 \
     GATEWAY_PORT="$GATEWAY_PORT" \
+    GATEWAY_AUTH_MODE="$GATEWAY_AUTH_MODE" \
     GATEWAY_AUTH_TOKEN="$GATEWAY_AUTH_TOKEN" \
     GATEWAY_JAVA_BASE_URL="http://127.0.0.1:$PORT" \
     GATEWAY_JAVA_BIN="$JAVA_BIN" \
@@ -378,10 +388,17 @@ main() {
     --data-binary "@$mcp_init_request" \
     -o "$unauthenticated_response" -w '%{http_code}' \
     "$MCP_URL")"
-  [[ "$unauthenticated_http_code" == "401" ]] \
-    || die "unauthenticated MCP initialize returned HTTP $unauthenticated_http_code, expected 401"
-  jq -e '.error == "unauthorized"' "$unauthenticated_response" >/dev/null \
-    || die "unauthenticated MCP initialize did not return the expected error"
+  if [[ "$GATEWAY_AUTH_MODE" == "required" ]]; then
+    [[ "$unauthenticated_http_code" == "401" ]] \
+      || die "unauthenticated MCP initialize returned HTTP $unauthenticated_http_code, expected 401"
+    jq -e '.error == "unauthorized"' "$unauthenticated_response" >/dev/null \
+      || die "unauthenticated MCP initialize did not return the expected error"
+  else
+    [[ "$unauthenticated_http_code" == "200" ]] \
+      || die "no-auth MCP initialize returned HTTP $unauthenticated_http_code, expected 200"
+    jq -e '.result.protocolVersion' "$unauthenticated_response" >/dev/null \
+      || die "no-auth MCP initialize response did not contain a protocol version"
+  fi
 
   mcp_http_code="$(post_mcp_json "$mcp_init_request" "$mcp_init_response")"
   [[ "$mcp_http_code" == "200" ]] || die "MCP initialize failed: HTTP $mcp_http_code"

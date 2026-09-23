@@ -11,7 +11,8 @@ lazy Java/Selenium worker for Naver Maps searches.
 - Private Java worker: `127.0.0.1:8080`
 - Java startup: lazy, on the first Naver tool call
 - Java shutdown: after the configured idle timeout
-- Authentication: `Authorization: Bearer $GATEWAY_AUTH_TOKEN`
+- Authentication: bearer token by default; set `GATEWAY_AUTH_MODE=none` for a
+  public no-auth deployment
 
 MCP is the only external application interface. The Java HTTP endpoints remain
 private worker endpoints used by the Go process; they are not public API
@@ -36,9 +37,9 @@ bash tests/build-baseline
 bash tests/run-script
 ```
 
-The script verifies bearer authentication, MCP initialization, tool discovery,
-keyword search, coordinate search, lazy Java startup, idle shutdown, and worker
-restart. Each search must return at least 10 results by default.
+The script verifies the configured authentication mode, MCP initialization, tool
+discovery, keyword search, coordinate search, lazy Java startup, idle shutdown,
+and worker restart. Each search must return at least 10 results by default.
 
 ## Tailscale deployment
 
@@ -55,8 +56,10 @@ EXTERNAL_MCP_URL='https://node.example.ts.net:10000/naver/mcp' bash tests/run-sc
 ## Deployment configuration
 
 `deploy/systemd/map-data-fetcher.service` keeps the Go process running as a
-user service. Store `GATEWAY_AUTH_TOKEN` in the service's private environment
-file; secrets are not stored in the repository.
+user service. Set `GATEWAY_AUTH_MODE=required` and store
+`GATEWAY_AUTH_TOKEN` in the service's private environment file for bearer
+authentication. Set `GATEWAY_AUTH_MODE=none` for a public no-auth deployment;
+add rate limiting and other abuse protections before exposing it publicly.
 
 The Java application still exposes its private worker routes under
 `/api/naver-map/*` and `/healthz` on port `8080`. Do not expose that port
