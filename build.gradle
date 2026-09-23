@@ -24,30 +24,9 @@ dependencies {
     implementation 'org.seleniumhq.selenium:selenium-java:4.49.0'
     runtimeOnly 'org.seleniumhq.selenium:selenium-devtools-v151:4.49.0'
 
-    testImplementation 'org.springframework.boot:spring-boot-starter-test'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-}
-
-tasks.named('test') {
-    useJUnitPlatform {
-        excludeTags 'cdp-smoke'
-    }
-}
-
-tasks.register('cdpSmokeTest', Test) {
-    description = 'Runs the Chrome DevTools Protocol smoke test against example.com.'
-    group = 'verification'
-    useJUnitPlatform {
-        includeTags 'cdp-smoke'
-    }
-    shouldRunAfter tasks.named('test')
 }
 
 tasks.named('compileJava') {
-    dependsOn tasks.named('spotlessApply')
-}
-
-tasks.named('compileTestJava') {
     dependsOn tasks.named('spotlessApply')
 }
 
@@ -58,9 +37,7 @@ spotless {
                 'org.springframework',
                 'lombok',
                 '',
-                'org.junit|org.mockito',
-                '\\#',
-                '\\#org.junit'
+                '\\#'
         )
         googleJavaFormat()
         formatAnnotations()

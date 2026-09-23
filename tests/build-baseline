@@ -15,7 +15,7 @@ die() {
 [[ -x "$GO_BIN" ]] || die "Go binary is not executable: $GO_BIN"
 
 printf '%s\n' 'Building Java application JAR...'
-bash "$REPO_ROOT/gradlew" bootJar -x test
+bash "$REPO_ROOT/gradlew" bootJar
 
 printf '%s\n' 'Building statically linked Linux gateway binary...'
 mkdir -p "$(dirname -- "$GATEWAY_OUTPUT")"

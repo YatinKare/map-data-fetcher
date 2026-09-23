@@ -10,7 +10,6 @@ import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-import org.springframework.web.client.RestClientException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -23,18 +22,6 @@ public class GlobalExceptionHandler {
     }
 
     return ResponseEntity.badRequest().body(new ValidationErrorResponse("잘못된 요청입니다", errors));
-  }
-
-  @ExceptionHandler(RestClientException.class)
-  public ResponseEntity<ErrorResponse> handleRestClient(RestClientException exception) {
-    return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-        .body(new ErrorResponse("카카오맵 검색 호출에 실패했습니다", exception.getMessage()));
-  }
-
-  @ExceptionHandler(AppConfigurationException.class)
-  public ResponseEntity<ErrorResponse> handleAppConfiguration(AppConfigurationException exception) {
-    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-        .body(new ErrorResponse("애플리케이션 설정 오류입니다", exception.getMessage()));
   }
 
   @ExceptionHandler(IllegalStateException.class)

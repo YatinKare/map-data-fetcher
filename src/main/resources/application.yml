@@ -6,15 +6,6 @@ server:
   address: ${SERVER_ADDRESS:127.0.0.1}
   port: ${SERVER_PORT:8080}
 
-kakao:
-  map:
-    client:
-      base-url: https://search.map.kakao.com
-      local-base-url: https://dapi.kakao.com
-      rest-api-key: 16d4d91fc8c49730bb4fa2eaf51dc02b
-      referer: https://map.kakao.com/
-      user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36
-
 naver:
   map:
     selenium:
