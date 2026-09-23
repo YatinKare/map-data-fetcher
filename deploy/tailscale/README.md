@@ -20,8 +20,8 @@ install -Dm644 deploy/systemd/map-data-fetcher.service \
   "$HOME/.config/systemd/user/map-data-fetcher.service"
 ```
 
-Create the private environment file referenced by the unit and put only the
-bearer token in it:
+Create the private environment file referenced by the unit. Bearer
+authentication is enabled by default:
 
 ```bash
 install -d -m 700 "$HOME/.config/map-data-fetcher"
@@ -30,7 +30,16 @@ chmod 600 "$HOME/.config/map-data-fetcher/gateway.env"
 ${EDITOR:-nano} "$HOME/.config/map-data-fetcher/gateway.env"
 ```
 
-Add one line in the editor: `GATEWAY_AUTH_TOKEN=replace-with-a-secret`.
+Add these lines in the editor:
+
+```env
+GATEWAY_AUTH_MODE=required
+GATEWAY_AUTH_TOKEN=replace-with-a-secret
+```
+
+For a public hobby deployment, use `GATEWAY_AUTH_MODE=none` and omit the token.
+Add rate limiting and other abuse protections before using that mode with
+Tailscale Funnel.
 
 Then load and start the service. Lingering lets the user service survive logout
 and start during boot without an interactive login:
@@ -72,8 +81,8 @@ tailscale serve status
 
 The MCP client URL is the node's HTTPS hostname plus port `10000` and
 `/naver/mcp`, for example
-`https://node.example.ts.net:10000/naver/mcp`. It still needs the Go boundary
-token:
+`https://node.example.ts.net:10000/naver/mcp`. With bearer authentication
+enabled, it needs the Go boundary token:
 
 ```http
 Authorization: Bearer <GATEWAY_AUTH_TOKEN>

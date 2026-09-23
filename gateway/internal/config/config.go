@@ -10,6 +10,8 @@ import (
 )
 
 const (
+	AuthModeRequired           = "required"
+	AuthModeNone               = "none"
 	defaultHost                = "127.0.0.1"
 	defaultPort                = 3000
 	defaultServiceName         = "map-data-gateway"
@@ -26,6 +28,7 @@ const (
 type Config struct {
 	Host                string
 	Port                int
+	AuthMode            string
 	AuthToken           string
 	JavaBaseURL         *url.URL
 	JavaBin             string
@@ -42,8 +45,13 @@ type Config struct {
 
 // LoadFromEnv loads gateway configuration from environment variables.
 func LoadFromEnv(getenv func(string) string) (Config, error) {
+	authMode := withDefault(getenv("GATEWAY_AUTH_MODE"), AuthModeRequired)
+	if authMode != AuthModeRequired && authMode != AuthModeNone {
+		return Config{}, fmt.Errorf("GATEWAY_AUTH_MODE must be %q or %q", AuthModeRequired, AuthModeNone)
+	}
+
 	authToken := strings.TrimSpace(getenv("GATEWAY_AUTH_TOKEN"))
-	if authToken == "" {
+	if authMode == AuthModeRequired && authToken == "" {
 		return Config{}, fmt.Errorf("GATEWAY_AUTH_TOKEN must be configured")
 	}
 
@@ -93,6 +101,7 @@ func LoadFromEnv(getenv func(string) string) (Config, error) {
 	return Config{
 		Host:                withDefault(getenv("GATEWAY_HOST"), defaultHost),
 		Port:                port,
+		AuthMode:            authMode,
 		AuthToken:           authToken,
 		JavaBaseURL:         javaBaseURL,
 		JavaBin:             withDefault(getenv("GATEWAY_JAVA_BIN"), defaultJavaBin),
