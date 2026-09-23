@@ -23,6 +23,7 @@ READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-60}"
 REQUEST_TIMEOUT_SECONDS="${REQUEST_TIMEOUT_SECONDS:-120}"
 GATEWAY_JAVA_IDLE_TIMEOUT="${GATEWAY_JAVA_IDLE_TIMEOUT:-5s}"
 IDLE_WAIT_SECONDS="${IDLE_WAIT_SECONDS:-10}"
+MIN_RESULT_COUNT="${MIN_RESULT_COUNT:-10}"
 MCP_PROTOCOL_VERSION="${MCP_PROTOCOL_VERSION:-2025-11-25}"
 MCP_URL="${MCP_URL:-http://127.0.0.1:$GATEWAY_PORT/mcp}"
 EXTERNAL_MCP_URL="${EXTERNAL_MCP_URL:-}"
@@ -60,7 +61,7 @@ resolve_jar() {
 
   local candidate
   candidate="$(find "$REPO_ROOT/build/libs" -maxdepth 1 -type f -name '*.jar' ! -name '*-plain.jar' -print -quit 2>/dev/null || true)"
-  [[ -n "$candidate" ]] || die "no application JAR found; run ./gradlew clean bootJar -x test first"
+  [[ -n "$candidate" ]] || die "no application JAR found; run ./gradlew clean bootJar first"
   printf '%s\n' "$candidate"
 }
 
@@ -294,6 +295,18 @@ validate_mcp_tool_response() {
   jq empty "$raw_file" >/dev/null
 }
 
+validate_result_count() {
+  local raw_file="$1"
+  local label="$2"
+  local count
+  jq -e 'type == "array"' "$raw_file" >/dev/null \
+    || die "$label did not return a JSON array"
+  count="$(jq -r 'length' "$raw_file")"
+  (( count >= MIN_RESULT_COUNT )) \
+    || die "$label returned $count results; expected at least $MIN_RESULT_COUNT"
+  printf '%s\n' "$count"
+}
+
 main() {
   require_command jq
   require_command curl
@@ -311,11 +324,12 @@ main() {
   [[ "${chrome_version%%.*}" == "${driver_version%%.*}" ]] || die "Chrome/ChromeDriver major versions differ: $chrome_version vs $driver_version"
 
   local jar_path jar_name output_file started ready_ms request_started request_exit
-  local http_code total_seconds samples request_meta run_status response_file
+  local http_code total_seconds samples request_meta request_error run_status response_file
   local response_bytes response_valid_json response_json_type response_result_count
   local mcp_init_request mcp_init_response mcp_tools_request mcp_tools_response
   local mcp_notification_request mcp_request_file mcp_raw_file mcp_http_code
-  local restart_request_file restart_raw_file
+  local unauthenticated_response unauthenticated_http_code
+  local restart_request_file restart_raw_file restart_result_count
   jar_path="$(resolve_jar)"
   gateway_bin="$(resolve_gateway)"
   jar_name="$(basename -- "$jar_path")"
@@ -355,6 +369,20 @@ main() {
   jq -cn --arg protocol "$MCP_PROTOCOL_VERSION" \
     '{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:$protocol,capabilities:{},clientInfo:{name:"map-data-fetcher-run-script",version:"1"}}}' \
     > "$mcp_init_request"
+  unauthenticated_response="$WORK_DIR/mcp-unauthenticated-response.json"
+  unauthenticated_http_code="$(curl --silent --show-error \
+    --connect-timeout 5 --max-time "$REQUEST_TIMEOUT_SECONDS" \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    --data-binary "@$mcp_init_request" \
+    -o "$unauthenticated_response" -w '%{http_code}' \
+    "$MCP_URL")"
+  [[ "$unauthenticated_http_code" == "401" ]] \
+    || die "unauthenticated MCP initialize returned HTTP $unauthenticated_http_code, expected 401"
+  jq -e '.error == "unauthorized"' "$unauthenticated_response" >/dev/null \
+    || die "unauthenticated MCP initialize did not return the expected error"
+
   mcp_http_code="$(post_mcp_json "$mcp_init_request" "$mcp_init_response")"
   [[ "$mcp_http_code" == "200" ]] || die "MCP initialize failed: HTTP $mcp_http_code"
   jq -e '.result.protocolVersion' "$mcp_init_response" >/dev/null \
@@ -408,7 +436,12 @@ main() {
   IFS='|' read -r http_code total_seconds <<< "$request_meta"
   [[ -n "${http_code:-}" ]] || http_code=000
   [[ -n "${total_seconds:-}" ]] || total_seconds=null
-  response_bytes="$(wc -c < "$response_file" 2>/dev/null || printf '0')"
+  if [[ "$request_exit" -ne 0 ]]; then
+    request_error="$(<"$WORK_DIR/request-error")"
+    die "keyword MCP request failed with curl exit $request_exit: ${request_error:-no response body}"
+  fi
+  [[ -f "$response_file" ]] || die "keyword MCP request returned no response body"
+  response_bytes="$(wc -c < "$response_file")"
   response_valid_json=false
   response_json_type="invalid"
   response_result_count=0
@@ -417,14 +450,19 @@ main() {
     response_json_type="$(jq -r 'type' "$mcp_raw_file")"
     response_result_count="$(jq -r 'if type == "array" then length else 0 end' "$mcp_raw_file")"
   fi
+  if [[ "$response_valid_json" != true ]]; then
+    request_error="$(jq -c '{error, result}' "$response_file" 2>/dev/null | cut -c1-2000 || true)"
+    die "keyword MCP request did not return valid raw JSON: ${request_error:-unparseable response}"
+  fi
+  response_result_count="$(validate_result_count "$mcp_raw_file" "keyword MCP request")"
   run_status="failed"
-  if [[ "$request_exit" -eq 0 && "$http_code" == "200" && "$response_valid_json" == true && "$response_json_type" == "array" ]]; then
+  if [[ "$request_exit" -eq 0 && "$http_code" == "200" ]]; then
     run_status="passed"
   fi
 
   local after_request_snapshot after_idle_shutdown_snapshot after_restart_snapshot
   local after_restart_idle_shutdown_snapshot after_shutdown_snapshot restart_response_file
-  local restart_http_code coordinate_http_code finished
+  local restart_http_code coordinate_http_code coordinate_result_count finished
   after_request_snapshot="$(snapshot after_request_idle)"
   wait_for_worker_exit || die "Java worker did not stop within ${IDLE_WAIT_SECONDS}s"
   after_idle_shutdown_snapshot="$(snapshot after_idle_shutdown)"
@@ -440,6 +478,7 @@ main() {
   [[ "$restart_http_code" == "200" ]] || die "worker did not restart for a second MCP request: HTTP $restart_http_code"
   validate_mcp_tool_response "$restart_response_file" "$restart_raw_file" \
     || die "second MCP request did not return valid raw JSON"
+  restart_result_count="$(validate_result_count "$restart_raw_file" "restarted keyword MCP request")"
   after_restart_snapshot="$(snapshot after_restart)"
   wait_for_worker_exit || die "restarted Java worker did not stop within ${IDLE_WAIT_SECONDS}s"
   after_restart_idle_shutdown_snapshot="$(snapshot after_restart_idle_shutdown)"
@@ -454,6 +493,7 @@ main() {
   [[ "$coordinate_http_code" == "200" ]] || die "coordinate MCP request failed: HTTP $coordinate_http_code"
   validate_mcp_tool_response "$coordinate_response_file" "$coordinate_raw_file" \
     || die "coordinate MCP request did not return valid raw JSON"
+  coordinate_result_count="$(validate_result_count "$coordinate_raw_file" "coordinate MCP request")"
 
   stop_gateway
   after_shutdown_snapshot="$(snapshot after_shutdown)"
@@ -475,6 +515,9 @@ main() {
     --arg response_json_type "$response_json_type" \
     --argjson response_result_count "$response_result_count" \
     --argjson restart_http_status "$restart_http_code" \
+    --argjson restart_result_count "$restart_result_count" \
+    --argjson coordinate_http_status "$coordinate_http_code" \
+    --argjson coordinate_result_count "$coordinate_result_count" \
     --arg http_code "$http_code" \
     --arg total_seconds "$total_seconds" \
     --arg run_status "$run_status" \
@@ -487,8 +530,10 @@ main() {
     --argjson after_restart_idle_shutdown "$after_restart_idle_shutdown_snapshot" \
     --argjson after_shutdown "$after_shutdown_snapshot" \
     --argjson samples "$samples" \
-    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,gateway_port:$gateway_port,headless:true},request:{type:"mcp_naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit,response_bytes:$response_bytes,response_valid_json:$response_valid_json,response_json_type:$response_json_type,response_result_count:$response_result_count},restart:{http_status:($restart_http_status|tonumber)},timing:{startup_ms:$startup_ms,gateway_startup_ms:$gateway_startup_ms,java_startup_ms:$java_startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_idle_shutdown:$after_idle_shutdown,after_restart:$after_restart,after_restart_idle_shutdown:$after_restart_idle_shutdown,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
+    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,gateway_port:$gateway_port,headless:true},request:{type:"mcp_naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit,response_bytes:$response_bytes,response_valid_json:$response_valid_json,response_json_type:$response_json_type,response_result_count:$response_result_count},restart:{http_status:($restart_http_status|tonumber),response_result_count:$restart_result_count},coordinate_request:{http_status:($coordinate_http_status|tonumber),response_result_count:$coordinate_result_count},timing:{startup_ms:$startup_ms,gateway_startup_ms:$gateway_startup_ms,java_startup_ms:$java_startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_idle_shutdown:$after_idle_shutdown,after_restart:$after_restart,after_restart_idle_shutdown:$after_restart_idle_shutdown,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
 
+  printf 'Validated result counts: keyword=%s restart=%s coordinate=%s\n' \
+    "$response_result_count" "$restart_result_count" "$coordinate_result_count"
   printf '%s\n' "Wrote $output_file"
   [[ "$run_status" == "passed" ]]
 }

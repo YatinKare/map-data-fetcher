@@ -57,6 +57,13 @@ func normalizeProcessExit(err error) error {
 		if status, ok := exitError.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 			return nil
 		}
+
+		// Java can translate an intentional process-group signal into the
+		// conventional shell exit status instead of reporting a signaled exit.
+		switch exitError.ExitCode() {
+		case 128 + int(syscall.SIGTERM), 128 + int(syscall.SIGKILL):
+			return nil
+		}
 	}
 
 	return err

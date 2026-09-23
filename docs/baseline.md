@@ -50,7 +50,7 @@ Chrome RSS is summed across its child processes and can count shared pages more 
 Run the script after building the application:
 
 ```bash
-./gradlew bootJar -x test
+./gradlew bootJar
 ./tests/run-script
 ```
 

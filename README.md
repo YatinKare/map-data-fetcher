@@ -7,7 +7,7 @@ lazy Java/Selenium worker for Naver Maps searches.
 
 - Go MCP server: `127.0.0.1:3000`
 - Local MCP path: `/mcp`
-- Tailscale MCP path: `/naver/mcp`
+- Tailscale MCP URL: `https://<node>.ts.net:10000/naver/mcp`
 - Private Java worker: `127.0.0.1:8080`
 - Java startup: lazy, on the first Naver tool call
 - Java shutdown: after the configured idle timeout
@@ -36,8 +36,9 @@ bash tests/build-baseline
 bash tests/run-script
 ```
 
-The script verifies MCP initialization, tool discovery, keyword search,
-coordinate search, lazy Java startup, idle shutdown, and worker restart.
+The script verifies bearer authentication, MCP initialization, tool discovery,
+keyword search, coordinate search, lazy Java startup, idle shutdown, and worker
+restart. Each search must return at least 10 results by default.
 
 ## Tailscale deployment
 
@@ -48,14 +49,14 @@ for Serve/Funnel setup, bearer-token configuration, verification, and cleanup.
 For an external endpoint check, provide `EXTERNAL_MCP_URL`:
 
 ```bash
-EXTERNAL_MCP_URL='https://node.example.ts.net/naver/mcp' bash tests/run-script
+EXTERNAL_MCP_URL='https://node.example.ts.net:10000/naver/mcp' bash tests/run-script
 ```
 
 ## Deployment configuration
 
-`gateway/ecosystem.config.cjs` is the PM2 configuration for the Go process.
-Set `GATEWAY_AUTH_TOKEN` in the host environment; secrets are not stored in
-the repository.
+`deploy/systemd/map-data-fetcher.service` keeps the Go process running as a
+user service. Store `GATEWAY_AUTH_TOKEN` in the service's private environment
+file; secrets are not stored in the repository.
 
 The Java application still exposes its private worker routes under
 `/api/naver-map/*` and `/healthz` on port `8080`. Do not expose that port

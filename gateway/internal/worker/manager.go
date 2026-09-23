@@ -135,8 +135,8 @@ func (m *Manager) start(ctx context.Context) error {
 		}
 		m.stateMu.Unlock()
 
-		if err != nil {
-			m.logger.Printf("Java worker exited: %v", err)
+		if normalizedErr := normalizeProcessExit(err); normalizedErr != nil {
+			m.logger.Printf("Java worker exited: %v", normalizedErr)
 		}
 	}()
 
