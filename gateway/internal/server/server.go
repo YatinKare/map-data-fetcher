@@ -24,6 +24,7 @@ type Server struct {
 	listener    net.Listener
 	serveErrors chan error
 	supervisor  worker.Supervisor
+	requestLogs *requestLogger
 }
 
 // New creates a gateway server without starting its listener.
@@ -39,10 +40,11 @@ func New(cfg config.Config) *Server {
 	})
 	javaClient := worker.NewJavaClient(cfg.JavaBaseURL, http.DefaultClient, supervisor)
 	mcpHandler := mcpserver.NewHandler(javaClient, cfg.Version)
+	requestLogs := newRequestLogger(log.Default())
 	if cfg.AuthMode == config.AuthModeNone {
-		mux.Handle("/mcp", mcpHandler)
+		mux.Handle("/mcp", requestLogs.middleware(mcpHandler))
 	} else {
-		mux.Handle("/mcp", requireBearerToken(cfg.AuthToken, mcpHandler))
+		mux.Handle("/mcp", requestLogs.middleware(requireBearerToken(cfg.AuthToken, mcpHandler)))
 	}
 
 	return &Server{
@@ -54,7 +56,14 @@ func New(cfg config.Config) *Server {
 		},
 		serveErrors: make(chan error, 1),
 		supervisor:  supervisor,
+		requestLogs: requestLogs,
 	}
+}
+
+// ToggleMCPRequestLogging switches request summaries on or off and reports the
+// new state. Logging starts disabled.
+func (s *Server) ToggleMCPRequestLogging() bool {
+	return s.requestLogs.toggle()
 }
 
 // Start binds the configured address and serves requests asynchronously.

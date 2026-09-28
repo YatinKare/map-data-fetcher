@@ -28,6 +28,17 @@ The server exposes two read-only tools:
 
 Both tools return the raw JSON extracted by the existing Java worker.
 
+MCP request logging is disabled by default. Toggle it on or off at runtime by
+sending `SIGUSR1` to the gateway process. For the systemd user service, run:
+
+```bash
+systemctl --user kill -s SIGUSR1 map-data-fetcher.service
+```
+
+When enabled, request summaries go to standard error through Go's default
+logger and are collected by systemd. View them with
+`journalctl --user -u map-data-fetcher.service`.
+
 ## Local verification
 
 Build the Java worker and Go server, then run the integration script:
