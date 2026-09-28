@@ -25,14 +25,25 @@ func main() {
 	log.Printf("gateway listening on %s", gateway.Address())
 
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
 	defer signal.Stop(signals)
 
-	select {
-	case signal := <-signals:
-		log.Printf("received %s; shutting down", signal)
-	case err := <-gateway.Errors():
-		log.Fatalf("gateway server failed: %v", err)
+	for {
+		select {
+		case receivedSignal := <-signals:
+			if receivedSignal == syscall.SIGUSR1 {
+				if gateway.ToggleMCPRequestLogging() {
+					log.Print("MCP request logging enabled")
+				} else {
+					log.Print("MCP request logging disabled")
+				}
+				continue
+			}
+			log.Printf("received %s; shutting down", receivedSignal)
+		case err := <-gateway.Errors():
+			log.Fatalf("gateway server failed: %v", err)
+		}
+		break
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
