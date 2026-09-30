@@ -45,14 +45,14 @@ func (c *JavaClient) SearchNaver(ctx context.Context, query string, page int) ([
 func (c *JavaClient) SearchNaverByCoordinate(
 	ctx context.Context,
 	query string,
-	x float64,
-	y float64,
+	longitude float64,
+	latitude float64,
 	page int,
 ) ([]byte, error) {
 	queryValues := make(url.Values)
 	queryValues.Set("query", query)
-	queryValues.Set("x", strconv.FormatFloat(x, 'f', -1, 64))
-	queryValues.Set("y", strconv.FormatFloat(y, 'f', -1, 64))
+	queryValues.Set("longitude", strconv.FormatFloat(longitude, 'f', -1, 64))
+	queryValues.Set("latitude", strconv.FormatFloat(latitude, 'f', -1, 64))
 	queryValues.Set("page", strconv.Itoa(page))
 	return c.getNaverJSON(ctx, "api/naver-map/coordinate", queryValues)
 }
