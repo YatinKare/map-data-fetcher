@@ -10,12 +10,48 @@ import (
 	"net/url"
 	"path"
 	"strconv"
+	"time"
 )
 
 const maxNaverResponseBytes = 10 << 20
 
 // ErrSearchBusy indicates that another Naver search currently owns the worker.
 var ErrSearchBusy = errors.New("A Naver search is already running. Retry after it finishes.")
+
+// SearchMetadata contains timing details safe to summarize in gateway logs.
+type SearchMetadata struct {
+	WorkerColdStart       bool
+	WorkerStartupDuration time.Duration
+	SearchDuration        time.Duration
+}
+
+// ToolFailure carries bounded labels for privacy-safe tool outcome logging.
+type ToolFailure struct {
+	Category string
+	Stage    string
+	Err      error
+}
+
+func (e *ToolFailure) Error() string { return e.Err.Error() }
+func (e *ToolFailure) Unwrap() error { return e.Err }
+
+// FailureDetails returns controlled labels without exposing the error text.
+func FailureDetails(err error) (category, stage string) {
+	if errors.Is(err, ErrSearchBusy) {
+		return "search_busy", "worker_slot"
+	}
+	var failure *ToolFailure
+	if errors.As(err, &failure) {
+		return failure.Category, failure.Stage
+	}
+	if errors.Is(err, context.Canceled) {
+		return "cancelled", "worker_request"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout", "worker_request"
+	}
+	return "worker_error", "worker_request"
+}
 
 // JavaClient calls the private Java worker and coordinates its lifecycle.
 type JavaClient struct {
@@ -40,7 +76,7 @@ func NewJavaClient(baseURL *url.URL, httpClient *http.Client, supervisor Supervi
 }
 
 // SearchNaver retrieves the raw JSON returned by Java.
-func (c *JavaClient) SearchNaver(ctx context.Context, query string, page int) ([]byte, error) {
+func (c *JavaClient) SearchNaver(ctx context.Context, query string, page int) ([]byte, SearchMetadata, error) {
 	queryValues := make(url.Values)
 	queryValues.Set("q", query)
 	queryValues.Set("page", strconv.Itoa(page))
@@ -54,7 +90,7 @@ func (c *JavaClient) SearchNaverByCoordinate(
 	longitude float64,
 	latitude float64,
 	page int,
-) ([]byte, error) {
+) ([]byte, SearchMetadata, error) {
 	queryValues := make(url.Values)
 	queryValues.Set("query", query)
 	queryValues.Set("longitude", strconv.FormatFloat(longitude, 'f', -1, 64))
@@ -67,21 +103,27 @@ func (c *JavaClient) getNaverJSON(
 	ctx context.Context,
 	endpoint string,
 	queryValues url.Values,
-) ([]byte, error) {
+) (body []byte, metadata SearchMetadata, resultErr error) {
 	select {
 	case c.searchSlot <- struct{}{}:
 		defer func() { <-c.searchSlot }()
 	default:
-		return nil, ErrSearchBusy
+		return nil, metadata, ErrSearchBusy
 	}
 
 	var release func()
 	if c.supervisor != nil {
-		var err error
-		release, err = c.supervisor.Acquire(ctx)
+		lease, err := c.supervisor.Acquire(ctx)
+		metadata.WorkerColdStart = lease.ColdStart
+		metadata.WorkerStartupDuration = lease.StartupDuration
 		if err != nil {
-			return nil, err
+			category, _ := FailureDetails(err)
+			if category == "worker_error" {
+				category = "worker_startup"
+			}
+			return nil, metadata, &ToolFailure{Category: category, Stage: "worker_startup", Err: err}
 		}
+		release = lease.Release
 		defer release()
 	}
 
@@ -91,25 +133,39 @@ func (c *JavaClient) getNaverJSON(
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("create Naver worker request: %w", err)
+		return nil, metadata, &ToolFailure{Category: "worker_request", Stage: "request_creation", Err: fmt.Errorf("create Naver worker request: %w", err)}
 	}
 	request.Header.Set("Accept", "application/json")
 
+	searchStarted := time.Now()
+	defer func() { metadata.SearchDuration = time.Since(searchStarted) }()
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("call Naver worker: %w", err)
+		category := "worker_call"
+		if errors.Is(err, context.Canceled) {
+			category = "cancelled"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			category = "timeout"
+		}
+		return nil, metadata, &ToolFailure{Category: category, Stage: "worker_request", Err: fmt.Errorf("call Naver worker: %w", err)}
 	}
 	defer response.Body.Close()
 
-	body, err := readJSONResponse(response.Body)
+	body, err = readJSONResponse(response.Body)
 	if err != nil {
-		return nil, err
+		category := "invalid_worker_response"
+		if errors.Is(err, context.Canceled) {
+			category = "cancelled"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			category = "timeout"
+		}
+		return nil, metadata, &ToolFailure{Category: category, Stage: "response_body", Err: err}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("Naver worker returned HTTP %d: %s", response.StatusCode, body)
+		return nil, metadata, &ToolFailure{Category: "worker_http_error", Stage: "worker_response", Err: fmt.Errorf("Naver worker returned HTTP %d: %s", response.StatusCode, body)}
 	}
 
-	return body, nil
+	return body, metadata, nil
 }
 
 func readJSONResponse(body io.Reader) ([]byte, error) {

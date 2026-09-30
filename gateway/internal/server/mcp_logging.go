@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,10 +14,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/YatinKare/map-data-fetcher/gateway/internal/mcpserver"
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
 const maxCapturedMCPBytes = 64 << 10
+
+type requestCorrelationKey struct{}
 
 type requestLogger struct {
 	logger  *log.Logger
@@ -42,6 +46,8 @@ func (l *requestLogger) middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(response, request)
 			return
 		}
+		correlation := correlationID(request)
+		request = request.WithContext(context.WithValue(request.Context(), requestCorrelationKey{}, correlation))
 
 		started := time.Now()
 		requestBody := &capturedBody{ReadCloser: request.Body}
@@ -60,6 +66,52 @@ func (l *requestLogger) middleware(next http.Handler) http.Handler {
 		entry.ResponseContentType = safeValue(response.Header().Get("Content-Type"), 100)
 		l.logger.Printf("MCP request %s", encodeLogEntry(entry))
 	})
+}
+
+// LogToolOutcome writes a structured per-tool summary while outcome logging is enabled.
+func (l *requestLogger) LogToolOutcome(ctx context.Context, outcome mcpserver.ToolOutcome) {
+	if !l.enabled.Load() {
+		return
+	}
+	entry := toolOutcomeLogEntry{
+		Timestamp:             time.Now().UTC().Format(time.RFC3339Nano),
+		CorrelationID:         correlationFromContext(ctx),
+		ToolName:              safeValue(outcome.ToolName, 80),
+		IsError:               outcome.IsError,
+		DurationMS:            durationMilliseconds(outcome.Duration),
+		WorkerColdStart:       outcome.WorkerColdStart,
+		WorkerStartupDuration: durationMilliseconds(outcome.WorkerStartupDuration),
+		SearchDuration:        durationMilliseconds(outcome.SearchDuration),
+		ResultCount:           outcome.ResultCount,
+		ResponseBytes:         outcome.ResponseBytes,
+		FailureCategory:       safeValue(outcome.FailureCategory, 40),
+		FailureStage:          safeValue(outcome.FailureStage, 40),
+	}
+	l.logger.Printf("MCP tool outcome %s", encodeLogEntry(entry))
+}
+
+type toolOutcomeLogEntry struct {
+	Timestamp             string  `json:"timestamp"`
+	CorrelationID         string  `json:"correlation_id,omitempty"`
+	ToolName              string  `json:"tool_name"`
+	IsError               bool    `json:"is_error"`
+	DurationMS            float64 `json:"duration_ms"`
+	WorkerColdStart       bool    `json:"worker_cold_start"`
+	WorkerStartupDuration float64 `json:"worker_startup_ms"`
+	SearchDuration        float64 `json:"search_ms"`
+	ResultCount           *int    `json:"result_count,omitempty"`
+	ResponseBytes         int     `json:"response_bytes"`
+	FailureCategory       string  `json:"failure_category,omitempty"`
+	FailureStage          string  `json:"failure_stage,omitempty"`
+}
+
+func durationMilliseconds(duration time.Duration) float64 {
+	return float64(duration) / float64(time.Millisecond)
+}
+
+func correlationFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(requestCorrelationKey{}).(string)
+	return value
 }
 
 type mcpLogEntry struct {
@@ -230,7 +282,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func encodeLogEntry(entry mcpLogEntry) string {
+func encodeLogEntry(entry any) string {
 	encoded, err := json.Marshal(entry)
 	if err != nil {
 		return `{"encoding_error":true}`

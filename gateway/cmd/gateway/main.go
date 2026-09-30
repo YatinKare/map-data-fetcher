@@ -18,15 +18,15 @@ func main() {
 	}
 
 	gateway := server.New(cfg)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
+	defer signal.Stop(signals)
+
 	if err := gateway.Start(); err != nil {
 		log.Fatalf("failed to start gateway: %v", err)
 	}
 
 	log.Printf("gateway listening on %s", gateway.Address())
-
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
-	defer signal.Stop(signals)
 
 	for {
 		select {
