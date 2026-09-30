@@ -28,6 +28,7 @@ MIN_RESULT_COUNT="${MIN_RESULT_COUNT:-10}"
 MCP_PROTOCOL_VERSION="${MCP_PROTOCOL_VERSION:-2025-11-25}"
 MCP_URL="${MCP_URL:-http://127.0.0.1:$GATEWAY_PORT/mcp}"
 EXTERNAL_MCP_URL="${EXTERNAL_MCP_URL:-}"
+MCP_LOGGING_CHECK="${MCP_LOGGING_CHECK:-false}"
 
 export JAVA_HOME="${JAVA_HOME:-$LOCAL_JDK}"
 export PATH="$(dirname -- "$JAVA_BIN"):$LOCAL_BIN:$PATH"
@@ -316,6 +317,79 @@ validate_result_count() {
   printf '%s\n' "$count"
 }
 
+enable_mcp_logging_for_check() {
+  case "$MCP_LOGGING_CHECK" in
+    false|0|no|"") return 0 ;;
+    true|1|yes) ;;
+    *) die "MCP_LOGGING_CHECK must be true or false" ;;
+  esac
+
+  kill -USR1 "$GATEWAY_PID" || die "could not enable MCP logging"
+  local attempt
+  for attempt in $(seq 1 50); do
+    if grep -q 'MCP request logging enabled' "$WORK_DIR/gateway.log"; then
+      printf '%s\n' 'MCP request and tool outcome logging enabled for this run'
+      return 0
+    fi
+    sleep 0.1
+  done
+  die "gateway did not confirm MCP logging was enabled"
+}
+
+validate_tool_outcome_logs() {
+  local outcomes_file="$WORK_DIR/tool-outcomes.json"
+  local requests_file="$WORK_DIR/mcp-requests.json"
+  local outcome_lines request_lines serialized
+  sed -n 's/^.*MCP tool outcome //p' "$WORK_DIR/gateway.log" > "$WORK_DIR/tool-outcomes.ndjson"
+  grep 'MCP request {' "$WORK_DIR/gateway.log" \
+    | sed -n 's/^.*MCP request //p' > "$WORK_DIR/mcp-requests.ndjson"
+  jq -s '.' "$WORK_DIR/tool-outcomes.ndjson" > "$outcomes_file" \
+    || die "tool outcome logs were not valid JSON"
+  jq -s '.' "$WORK_DIR/mcp-requests.ndjson" > "$requests_file" \
+    || die "MCP request logs were not valid JSON"
+
+  jq -e \
+    --argjson keyword_count "$response_result_count" \
+    --argjson restart_count "$restart_result_count" \
+    --argjson coordinate_count "$coordinate_result_count" \
+    --slurpfile requests "$requests_file" \
+    '
+      length == 3 and
+      (.[0].tool_name == "naver_map_search" and .[0].result_count == $keyword_count) and
+      (.[1].tool_name == "naver_map_search" and .[1].result_count == $restart_count) and
+      (.[2].tool_name == "naver_map_coordinate_search" and .[2].result_count == $coordinate_count) and
+      all(.[];
+        .is_error == false and
+        .duration_ms >= 0 and
+        .search_ms >= 0 and
+        .response_bytes > 0 and
+        .correlation_id != "" and
+        (.correlation_id as $id | any($requests[0][]; .correlation_id == $id)) and
+        (has("query") | not) and
+        (has("longitude") | not) and
+        (has("latitude") | not) and
+        (has("arguments") | not) and
+        (has("response_body") | not) and
+        (has("results") | not)
+      ) and
+      .[0].worker_cold_start == true and
+      .[1].worker_cold_start == true and
+      .[2].worker_cold_start == false and
+      .[2].worker_startup_ms == 0
+    ' "$outcomes_file" >/dev/null \
+    || die "tool outcome logs did not match the successful keyword and coordinate calls"
+
+  serialized="$(jq -c '.' "$outcomes_file")"
+  [[ "$serialized" != *"$QUERY"* ]] || die "tool outcome logs exposed the keyword query"
+  [[ "$serialized" != *"$COORDINATE_QUERY"* ]] || die "tool outcome logs exposed the coordinate query"
+  [[ "$serialized" != *"$COORDINATE_LONGITUDE"* ]] || die "tool outcome logs exposed the longitude"
+  [[ "$serialized" != *"$COORDINATE_LATITUDE"* ]] || die "tool outcome logs exposed the latitude"
+  outcome_lines="$(jq 'length' "$outcomes_file")"
+  request_lines="$(jq 'length' "$requests_file")"
+  printf 'Validated %s privacy-safe tool outcomes correlated with %s MCP request logs\n' \
+    "$outcome_lines" "$request_lines"
+}
+
 main() {
   require_command jq
   require_command curl
@@ -373,6 +447,7 @@ main() {
   GATEWAY_PID=$!
   gateway_ready_ms="$(wait_until_ready "http://127.0.0.1:$GATEWAY_PORT/healthz" "$GATEWAY_PID" "$gateway_started" || true)"
   [[ -n "$gateway_ready_ms" ]] || die "gateway did not become ready within ${READY_TIMEOUT_SECONDS}s"
+  enable_mcp_logging_for_check
 
   mcp_init_request="$WORK_DIR/mcp-initialize.json"
   mcp_init_response="$WORK_DIR/mcp-initialize-response.json"
@@ -497,8 +572,6 @@ main() {
     || die "second MCP request did not return valid raw JSON"
   restart_result_count="$(validate_result_count "$restart_raw_file" "restarted keyword MCP request")"
   after_restart_snapshot="$(snapshot after_restart)"
-  wait_for_worker_exit || die "restarted Java worker did not stop within ${IDLE_WAIT_SECONDS}s"
-  after_restart_idle_shutdown_snapshot="$(snapshot after_restart_idle_shutdown)"
 
   coordinate_response_file="$WORK_DIR/mcp-coordinate-response.json"
   coordinate_request_file="$WORK_DIR/mcp-coordinate-request.json"
@@ -511,6 +584,12 @@ main() {
   validate_mcp_tool_response "$coordinate_response_file" "$coordinate_raw_file" \
     || die "coordinate MCP request did not return valid raw JSON"
   coordinate_result_count="$(validate_result_count "$coordinate_raw_file" "coordinate MCP request")"
+  wait_for_worker_exit || die "restarted Java worker did not stop after coordinate search within ${IDLE_WAIT_SECONDS}s"
+  after_restart_idle_shutdown_snapshot="$(snapshot after_restart_idle_shutdown)"
+
+  if [[ "$MCP_LOGGING_CHECK" == "true" || "$MCP_LOGGING_CHECK" == "1" || "$MCP_LOGGING_CHECK" == "yes" ]]; then
+    validate_tool_outcome_logs
+  fi
 
   stop_gateway
   after_shutdown_snapshot="$(snapshot after_shutdown)"

@@ -2,10 +2,12 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/YatinKare/map-data-fetcher/gateway/internal/worker"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,8 +20,27 @@ const (
 
 // NaverSearchClient is the private Java worker boundary used by the MCP tool.
 type NaverSearchClient interface {
-	SearchNaver(context.Context, string, int) ([]byte, error)
-	SearchNaverByCoordinate(context.Context, string, float64, float64, int) ([]byte, error)
+	SearchNaver(context.Context, string, int) ([]byte, worker.SearchMetadata, error)
+	SearchNaverByCoordinate(context.Context, string, float64, float64, int) ([]byte, worker.SearchMetadata, error)
+}
+
+// ToolOutcome is the payload emitted after one MCP search tool call.
+type ToolOutcome struct {
+	ToolName              string
+	IsError               bool
+	Duration              time.Duration
+	WorkerColdStart       bool
+	WorkerStartupDuration time.Duration
+	SearchDuration        time.Duration
+	ResultCount           *int
+	ResponseBytes         int
+	FailureCategory       string
+	FailureStage          string
+}
+
+// ToolOutcomeLogger receives privacy-safe summaries of MCP tool calls.
+type ToolOutcomeLogger interface {
+	LogToolOutcome(context.Context, ToolOutcome)
 }
 
 // NaverSearchInput is the public input schema exposed through MCP.
@@ -38,17 +59,19 @@ type NaverCoordinateSearchInput struct {
 
 type naverSearchTool struct {
 	client NaverSearchClient
+	logger ToolOutcomeLogger
 }
 
 type naverCoordinateSearchTool struct {
 	client NaverSearchClient
+	logger ToolOutcomeLogger
 }
 
 // NewHandler creates the stateless Streamable HTTP MCP handler.
-func NewHandler(client NaverSearchClient, version string) http.Handler {
+func NewHandler(client NaverSearchClient, version string, logger ToolOutcomeLogger) http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: "map-data-fetcher", Version: version}, nil)
-	tool := &naverSearchTool{client: client}
-	coordinateTool := &naverCoordinateSearchTool{client: client}
+	tool := &naverSearchTool{client: client, logger: logger}
+	coordinateTool := &naverCoordinateSearchTool{client: client, logger: logger}
 
 	mcp.AddTool(
 		server,
@@ -82,19 +105,35 @@ func (t *naverSearchTool) handle(
 	_ *mcp.CallToolRequest,
 	input NaverSearchInput,
 ) (*mcp.CallToolResult, any, error) {
+	started := time.Now()
+	outcome := ToolOutcome{ToolName: naverSearchToolName}
+	defer func() {
+		outcome.Duration = time.Since(started)
+		if t.logger != nil {
+			t.logger.LogToolOutcome(ctx, outcome)
+		}
+	}()
+
 	query, page, err := normalizeKeywordInput(input)
 	if err != nil {
+		outcome.IsError = true
+		outcome.FailureCategory = "invalid_arguments"
+		outcome.FailureStage = "input_validation"
 		return nil, nil, err
 	}
 
-	rawJSON, err := t.client.SearchNaver(ctx, query, page)
+	rawJSON, metadata, err := t.client.SearchNaver(ctx, query, page)
+	applySearchMetadata(&outcome, metadata, rawJSON)
 	if err != nil {
+		outcome.IsError = true
+		outcome.FailureCategory, outcome.FailureStage = worker.FailureDetails(err)
 		if errors.Is(err, worker.ErrSearchBusy) {
 			return searchBusyResult(), nil, nil
 		}
 		return nil, nil, fmt.Errorf("Naver search failed: %w", err)
 	}
 
+	setResultCount(&outcome, rawJSON)
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: string(rawJSON)},
@@ -107,24 +146,55 @@ func (t *naverCoordinateSearchTool) handle(
 	_ *mcp.CallToolRequest,
 	input NaverCoordinateSearchInput,
 ) (*mcp.CallToolResult, any, error) {
+	started := time.Now()
+	outcome := ToolOutcome{ToolName: naverCoordinateSearchToolName}
+	defer func() {
+		outcome.Duration = time.Since(started)
+		if t.logger != nil {
+			t.logger.LogToolOutcome(ctx, outcome)
+		}
+	}()
+
 	query, longitude, latitude, page, err := normalizeCoordinateInput(input)
 	if err != nil {
+		outcome.IsError = true
+		outcome.FailureCategory = "invalid_arguments"
+		outcome.FailureStage = "input_validation"
 		return nil, nil, err
 	}
 
-	rawJSON, err := t.client.SearchNaverByCoordinate(ctx, query, longitude, latitude, page)
+	rawJSON, metadata, err := t.client.SearchNaverByCoordinate(ctx, query, longitude, latitude, page)
+	applySearchMetadata(&outcome, metadata, rawJSON)
 	if err != nil {
+		outcome.IsError = true
+		outcome.FailureCategory, outcome.FailureStage = worker.FailureDetails(err)
 		if errors.Is(err, worker.ErrSearchBusy) {
 			return searchBusyResult(), nil, nil
 		}
 		return nil, nil, fmt.Errorf("Naver coordinate search failed: %w", err)
 	}
 
+	setResultCount(&outcome, rawJSON)
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: string(rawJSON)},
 		},
 	}, nil, nil
+}
+
+func applySearchMetadata(outcome *ToolOutcome, metadata worker.SearchMetadata, rawJSON []byte) {
+	outcome.WorkerColdStart = metadata.WorkerColdStart
+	outcome.WorkerStartupDuration = metadata.WorkerStartupDuration
+	outcome.SearchDuration = metadata.SearchDuration
+	outcome.ResponseBytes = len(rawJSON)
+}
+
+func setResultCount(outcome *ToolOutcome, rawJSON []byte) {
+	var results []json.RawMessage
+	if json.Unmarshal(rawJSON, &results) == nil {
+		count := len(results)
+		outcome.ResultCount = &count
+	}
 }
 
 func searchBusyResult() *mcp.CallToolResult {

@@ -39,8 +39,8 @@ func New(cfg config.Config) *Server {
 		handleHealth(response, request, cfg)
 	})
 	javaClient := worker.NewJavaClient(cfg.JavaBaseURL, http.DefaultClient, supervisor)
-	mcpHandler := mcpserver.NewHandler(javaClient, cfg.Version)
 	requestLogs := newRequestLogger(log.Default())
+	mcpHandler := mcpserver.NewHandler(javaClient, cfg.Version, requestLogs)
 	if cfg.AuthMode == config.AuthModeNone {
 		mux.Handle("/mcp", requestLogs.middleware(mcpHandler))
 	} else {

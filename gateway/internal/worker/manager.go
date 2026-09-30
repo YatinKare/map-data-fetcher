@@ -18,8 +18,15 @@ import (
 
 // Supervisor controls the lifecycle of the Java worker behind the gateway.
 type Supervisor interface {
-	Acquire(context.Context) (func(), error)
+	Acquire(context.Context) (Lease, error)
 	Shutdown(context.Context) error
+}
+
+// Lease describes one active use of the Java worker.
+type Lease struct {
+	Release         func()
+	ColdStart       bool
+	StartupDuration time.Duration
 }
 
 // Manager starts the Java worker on demand and stops it after an idle period.
@@ -65,23 +72,33 @@ func NewManager(cfg config.Config, httpClient *http.Client, logger *log.Logger) 
 }
 
 // Acquire ensures that the worker is ready and records one active request.
-func (m *Manager) Acquire(ctx context.Context) (func(), error) {
-	if err := m.ensureRunning(ctx); err != nil {
-		return nil, err
+func (m *Manager) Acquire(ctx context.Context) (Lease, error) {
+	started := time.Now()
+	coldStart, err := m.ensureRunning(ctx)
+	startupDuration := time.Duration(0)
+	if coldStart {
+		startupDuration = time.Since(started)
+	}
+	if err != nil {
+		return Lease{ColdStart: coldStart, StartupDuration: startupDuration}, err
 	}
 
 	m.stateMu.Lock()
 	if m.closed {
 		m.stateMu.Unlock()
-		return nil, fmt.Errorf("Java worker manager is shut down")
+		return Lease{ColdStart: coldStart, StartupDuration: startupDuration}, fmt.Errorf("Java worker manager is shut down")
 	}
 	m.activeRequests++
 	m.lastActivity = time.Now()
 	m.stateMu.Unlock()
 
 	var once sync.Once
-	return func() {
-		once.Do(m.release)
+	return Lease{
+		ColdStart:       coldStart,
+		StartupDuration: startupDuration,
+		Release: func() {
+			once.Do(m.release)
+		},
 	}, nil
 }
 
@@ -94,22 +111,22 @@ func (m *Manager) release() {
 	m.stateMu.Unlock()
 }
 
-func (m *Manager) ensureRunning(ctx context.Context) error {
+func (m *Manager) ensureRunning(ctx context.Context) (bool, error) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 
 	m.stateMu.Lock()
 	if m.closed {
 		m.stateMu.Unlock()
-		return fmt.Errorf("Java worker manager is shut down")
+		return false, fmt.Errorf("Java worker manager is shut down")
 	}
 	if m.command != nil {
 		m.stateMu.Unlock()
-		return nil
+		return false, nil
 	}
 	m.stateMu.Unlock()
 
-	return m.start(ctx)
+	return true, m.start(ctx)
 }
 
 func (m *Manager) start(ctx context.Context) error {
