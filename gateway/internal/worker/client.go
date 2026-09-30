@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,11 +14,15 @@ import (
 
 const maxNaverResponseBytes = 10 << 20
 
+// ErrSearchBusy indicates that another Naver search currently owns the worker.
+var ErrSearchBusy = errors.New("A Naver search is already running. Retry after it finishes.")
+
 // JavaClient calls the private Java worker and coordinates its lifecycle.
 type JavaClient struct {
 	baseURL    *url.URL
 	httpClient *http.Client
 	supervisor Supervisor
+	searchSlot chan struct{}
 }
 
 // NewJavaClient creates a client for the private Java worker.
@@ -30,6 +35,7 @@ func NewJavaClient(baseURL *url.URL, httpClient *http.Client, supervisor Supervi
 		baseURL:    baseURL,
 		httpClient: httpClient,
 		supervisor: supervisor,
+		searchSlot: make(chan struct{}, 1),
 	}
 }
 
@@ -62,6 +68,13 @@ func (c *JavaClient) getNaverJSON(
 	endpoint string,
 	queryValues url.Values,
 ) ([]byte, error) {
+	select {
+	case c.searchSlot <- struct{}{}:
+		defer func() { <-c.searchSlot }()
+	default:
+		return nil, ErrSearchBusy
+	}
+
 	var release func()
 	if c.supervisor != nil {
 		var err error
