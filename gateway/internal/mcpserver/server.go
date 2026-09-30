@@ -28,10 +28,10 @@ type NaverSearchInput struct {
 
 // NaverCoordinateSearchInput is the public coordinate-search schema exposed through MCP.
 type NaverCoordinateSearchInput struct {
-	Query string   `json:"query" jsonschema:"Naver Maps search query"`
-	X     *float64 `json:"x" jsonschema:"longitude; required"`
-	Y     *float64 `json:"y" jsonschema:"latitude; required"`
-	Page  int      `json:"page,omitempty" jsonschema:"optional result page; defaults to 1; allowed values are 1 through 5"`
+	Query     string   `json:"query" jsonschema:"Naver Maps search query"`
+	Longitude *float64 `json:"longitude" jsonschema:"required WGS84 longitude in decimal degrees from -180 to 180"`
+	Latitude  *float64 `json:"latitude" jsonschema:"required WGS84 latitude in decimal degrees from -90 to 90"`
+	Page      int      `json:"page,omitempty" jsonschema:"optional result page; defaults to 1; allowed values are 1 through 5"`
 }
 
 type naverSearchTool struct {
@@ -60,7 +60,7 @@ func NewHandler(client NaverSearchClient, version string) http.Handler {
 		server,
 		&mcp.Tool{
 			Name:        naverCoordinateSearchToolName,
-			Description: "Search Naver Maps around coordinates and return the current raw extracted JSON.",
+			Description: "Search Naver Maps around a WGS84 coordinate and return the current raw extracted JSON. Provide longitude and latitude in decimal degrees.",
 		},
 		coordinateTool.handle,
 	)
@@ -102,12 +102,12 @@ func (t *naverCoordinateSearchTool) handle(
 	_ *mcp.CallToolRequest,
 	input NaverCoordinateSearchInput,
 ) (*mcp.CallToolResult, any, error) {
-	query, x, y, page, err := normalizeCoordinateInput(input)
+	query, longitude, latitude, page, err := normalizeCoordinateInput(input)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	rawJSON, err := t.client.SearchNaverByCoordinate(ctx, query, x, y, page)
+	rawJSON, err := t.client.SearchNaverByCoordinate(ctx, query, longitude, latitude, page)
 	if err != nil {
 		return nil, nil, fmt.Errorf("Naver coordinate search failed: %w", err)
 	}
@@ -138,17 +138,17 @@ func normalizeCoordinateInput(input NaverCoordinateSearchInput) (string, float64
 	if err != nil {
 		return "", 0, 0, 0, err
 	}
-	if input.X == nil {
-		return "", 0, 0, 0, fmt.Errorf("x is required")
+	if input.Longitude == nil {
+		return "", 0, 0, 0, fmt.Errorf("longitude is required")
 	}
-	if input.Y == nil {
-		return "", 0, 0, 0, fmt.Errorf("y is required")
+	if input.Latitude == nil {
+		return "", 0, 0, 0, fmt.Errorf("latitude is required")
 	}
-	if *input.X < -180 || *input.X > 180 {
-		return "", 0, 0, 0, fmt.Errorf("x must be between -180 and 180")
+	if *input.Longitude < -180 || *input.Longitude > 180 {
+		return "", 0, 0, 0, fmt.Errorf("longitude must be between -180 and 180")
 	}
-	if *input.Y < -90 || *input.Y > 90 {
-		return "", 0, 0, 0, fmt.Errorf("y must be between -90 and 90")
+	if *input.Latitude < -90 || *input.Latitude > 90 {
+		return "", 0, 0, 0, fmt.Errorf("latitude must be between -90 and 90")
 	}
 
 	page, err := normalizePage(input.Page)
@@ -156,7 +156,7 @@ func normalizeCoordinateInput(input NaverCoordinateSearchInput) (string, float64
 		return "", 0, 0, 0, err
 	}
 
-	return query, *input.X, *input.Y, page, nil
+	return query, *input.Longitude, *input.Latitude, page, nil
 }
 
 func normalizeQuery(value string) (string, error) {

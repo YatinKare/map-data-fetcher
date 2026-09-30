@@ -85,7 +85,7 @@ public class NaverMapSearchService {
       driver.executeCdpCommand("Network.enable", Map.of());
       Integer requestedPage = request.page();
       int targetPage = requestedPage == null ? 1 : requestedPage;
-      driver.get(buildCoordinateUrl(request.x(), request.y()));
+      driver.get(buildCoordinateUrl(request.longitude(), request.latitude()));
       submitSearchKeyword(driver, request.query());
       JsonNode result = captureSearchResults(driver, targetPage);
       LOGGER.info("Naver coordinate search completed for page {}", targetPage);
@@ -126,13 +126,13 @@ public class NaverMapSearchService {
     return properties.searchUrl() + UriUtils.encodePathSegment(query, StandardCharsets.UTF_8);
   }
 
-  private String buildCoordinateUrl(Double x, Double y) {
+  private String buildCoordinateUrl(Double longitude, Double latitude) {
     String searchUrl = properties.searchUrl();
     int searchPathIndex = searchUrl.indexOf("/search/");
     String baseUrl = searchPathIndex >= 0 ? searchUrl.substring(0, searchPathIndex) : searchUrl;
     return UriComponentsBuilder.fromUriString(baseUrl)
-        .queryParam("lng", x)
-        .queryParam("lat", y)
+        .queryParam("lng", longitude)
+        .queryParam("lat", latitude)
         .queryParam("c", DEFAULT_MAP_CAMERA)
         .build(true)
         .toUriString();
