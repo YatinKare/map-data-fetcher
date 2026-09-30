@@ -2,10 +2,12 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/YatinKare/map-data-fetcher/gateway/internal/worker"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -87,6 +89,9 @@ func (t *naverSearchTool) handle(
 
 	rawJSON, err := t.client.SearchNaver(ctx, query, page)
 	if err != nil {
+		if errors.Is(err, worker.ErrSearchBusy) {
+			return searchBusyResult(), nil, nil
+		}
 		return nil, nil, fmt.Errorf("Naver search failed: %w", err)
 	}
 
@@ -109,6 +114,9 @@ func (t *naverCoordinateSearchTool) handle(
 
 	rawJSON, err := t.client.SearchNaverByCoordinate(ctx, query, longitude, latitude, page)
 	if err != nil {
+		if errors.Is(err, worker.ErrSearchBusy) {
+			return searchBusyResult(), nil, nil
+		}
 		return nil, nil, fmt.Errorf("Naver coordinate search failed: %w", err)
 	}
 
@@ -117,6 +125,15 @@ func (t *naverCoordinateSearchTool) handle(
 			&mcp.TextContent{Text: string(rawJSON)},
 		},
 	}, nil, nil
+}
+
+func searchBusyResult() *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: worker.ErrSearchBusy.Error()},
+		},
+		IsError: true,
+	}
 }
 
 func normalizeKeywordInput(input NaverSearchInput) (string, int, error) {
