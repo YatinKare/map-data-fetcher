@@ -35,6 +35,11 @@ type ToolFailure struct {
 func (e *ToolFailure) Error() string { return e.Err.Error() }
 func (e *ToolFailure) Unwrap() error { return e.Err }
 
+type workerErrorResponse struct {
+	Category string `json:"category"`
+	Stage    string `json:"stage"`
+}
+
 // FailureDetails returns controlled labels without exposing the error text.
 func FailureDetails(err error) (category, stage string) {
 	if errors.Is(err, ErrSearchBusy) {
@@ -162,10 +167,36 @@ func (c *JavaClient) getNaverJSON(
 		return nil, metadata, &ToolFailure{Category: category, Stage: "response_body", Err: err}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, metadata, &ToolFailure{Category: "worker_http_error", Stage: "worker_response", Err: fmt.Errorf("Naver worker returned HTTP %d: %s", response.StatusCode, body)}
+		var workerError workerErrorResponse
+		if json.Unmarshal(body, &workerError) == nil && validWorkerFailureLabels(workerError.Category, workerError.Stage) {
+			return nil, metadata, &ToolFailure{
+				Category: workerError.Category,
+				Stage:    workerError.Stage,
+				Err:      fmt.Errorf("Naver search failed (%s at %s)", workerError.Category, workerError.Stage),
+			}
+		}
+		return nil, metadata, &ToolFailure{Category: "worker_http_error", Stage: "worker_response", Err: fmt.Errorf("Naver worker returned HTTP %d", response.StatusCode)}
 	}
 
 	return body, metadata, nil
+}
+
+func validWorkerFailureLabels(category, stage string) bool {
+	validCategories := map[string]bool{
+		"capture_error":    true,
+		"invalid_response": true,
+		"timeout":          true,
+		"cancelled":        true,
+	}
+	validStages := map[string]bool{
+		"browser_startup":   true,
+		"page_navigation":   true,
+		"search_input":      true,
+		"response_matching": true,
+		"response_body":     true,
+		"pagination":        true,
+	}
+	return validCategories[category] && validStages[stage]
 }
 
 func readJSONResponse(body io.Reader) ([]byte, error) {
