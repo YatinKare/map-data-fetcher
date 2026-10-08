@@ -77,7 +77,7 @@ func NewHandler(client NaverSearchClient, version string, logger ToolOutcomeLogg
 		server,
 		&mcp.Tool{
 			Name:        naverSearchToolName,
-			Description: "Search Naver Maps and return the current raw extracted JSON.",
+			Description: "Search Naver Maps and return compact place results with normalized fields.",
 		},
 		tool.handle,
 	)
@@ -85,7 +85,7 @@ func NewHandler(client NaverSearchClient, version string, logger ToolOutcomeLogg
 		server,
 		&mcp.Tool{
 			Name:        naverCoordinateSearchToolName,
-			Description: "Search Naver Maps around a WGS84 coordinate and return the current raw extracted JSON. Provide longitude and latitude in decimal degrees.",
+			Description: "Search Naver Maps around a WGS84 coordinate and return compact place results with normalized fields. Provide longitude and latitude in decimal degrees.",
 		},
 		coordinateTool.handle,
 	)
@@ -132,11 +132,19 @@ func (t *naverSearchTool) handle(
 		}
 		return nil, nil, fmt.Errorf("Naver search failed: %w", err)
 	}
+	normalizedJSON, err := normalizeNaverResults(rawJSON)
+	if err != nil {
+		outcome.IsError = true
+		outcome.FailureCategory = "invalid_response"
+		outcome.FailureStage = "response_normalization"
+		return nil, nil, fmt.Errorf("Naver search returned invalid place results: %w", err)
+	}
 
-	setResultCount(&outcome, rawJSON)
+	outcome.ResponseBytes = len(normalizedJSON)
+	setResultCount(&outcome, normalizedJSON)
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: string(rawJSON)},
+			&mcp.TextContent{Text: string(normalizedJSON)},
 		},
 	}, nil, nil
 }
@@ -173,11 +181,19 @@ func (t *naverCoordinateSearchTool) handle(
 		}
 		return nil, nil, fmt.Errorf("Naver coordinate search failed: %w", err)
 	}
+	normalizedJSON, err := normalizeNaverResults(rawJSON)
+	if err != nil {
+		outcome.IsError = true
+		outcome.FailureCategory = "invalid_response"
+		outcome.FailureStage = "response_normalization"
+		return nil, nil, fmt.Errorf("Naver coordinate search returned invalid place results: %w", err)
+	}
 
-	setResultCount(&outcome, rawJSON)
+	outcome.ResponseBytes = len(normalizedJSON)
+	setResultCount(&outcome, normalizedJSON)
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: string(rawJSON)},
+			&mcp.TextContent{Text: string(normalizedJSON)},
 		},
 	}, nil, nil
 }

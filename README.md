@@ -26,7 +26,36 @@ The server exposes two read-only tools:
 - `naver_map_coordinate_search`: coordinate search using `query`, `x`
   (longitude), `y` (latitude), and optional `page`.
 
-Both tools return the raw JSON extracted by the existing Java worker.
+Both tools return an array of compact place results. Each result can include
+`rank`, `id`, `name`, `category`, `road_address`, `coordinates`, `tel`,
+`business_status`, `business_hours`, `break_time`, `last_order`,
+`thumbnail_url`, `homepage`, `menu_info`, and `reservation_options`. Fields
+without an upstream value are omitted. Time ranges are returned as local
+`HH:mm–HH:mm` strings. Phone numbers prefer the listed telephone number and
+fall back to Naver's virtual telephone number when needed.
+
+Review counts and Naver-specific distance, indoor, and subway fields are not
+included. For example:
+
+```json
+[
+  {
+    "rank": 1,
+    "id": "1479088801",
+    "name": "태능감자탕 노원본점",
+    "category": ["한식", "감자탕"],
+    "road_address": "서울특별시 노원구 노해로83길 10-1 1층",
+    "coordinates": {"longitude": 127.0644051, "latitude": 37.6558436},
+    "tel": "0507-1362-8077",
+    "business_status": "24시간 영업",
+    "business_hours": "00:00–24:00",
+    "thumbnail_url": "https://ldb-phinf.pstatic.net/example.jpg",
+    "homepage": "https://taeneung.co.kr/",
+    "menu_info": "태능식감자탕(중) 38,000 | 태능식감자탕(대) 45,000",
+    "reservation_options": ["reservation"]
+  }
+]
+```
 
 MCP request logging is disabled by default. Toggle it on or off at runtime by
 sending `SIGUSR1` to the gateway process. For the systemd user service, run:
