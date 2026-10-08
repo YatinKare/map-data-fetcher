@@ -17,8 +17,4 @@ public record NaverMapCoordinateSearchRequest(
         Double latitude,
     @Min(value = 1, message = "page must be at least 1")
         @Max(value = 5, message = "page must be at most 5")
-        Integer page) {
-  public NaverMapCoordinateSearchRequest {
-    page = page == null ? 1 : page;
-  }
-}
+        int page) {}
