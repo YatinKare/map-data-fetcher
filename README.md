@@ -87,6 +87,18 @@ The Go server stays on loopback while Tailscale publishes the external
 `/naver/mcp` path. See [deploy/tailscale/README.md](deploy/tailscale/README.md)
 for Serve/Funnel setup, bearer-token configuration, verification, and cleanup.
 
+## OpenAI Secure MCP Tunnel
+
+Install and run OpenAI's [`tunnel-client`](https://github.com/openai/tunnel-client)
+on a host that can reach the gateway, forwarding to `http://127.0.0.1:3000/mcp`;
+create the tunnel in [OpenAI Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels).
+Keep the gateway bound to loopback and set `GATEWAY_AUTH_MODE=none` for this
+local connection. To add the MCP server, use [ChatGPT on the web](https://chatgpt.com),
+then choose **Add custom MCP server** and **Tunnel** for the connection; this
+setup is not available in the ChatGPT desktop app. See OpenAI's [Secure MCP
+Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+for tunnel-client setup details.
+
 For an external endpoint check, provide `EXTERNAL_MCP_URL`:
 
 ```bash
