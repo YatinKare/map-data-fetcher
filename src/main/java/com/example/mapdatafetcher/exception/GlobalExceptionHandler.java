@@ -14,6 +14,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+  @ExceptionHandler(CaptureException.class)
+  public ResponseEntity<ErrorResponse> handleCaptureFailure(CaptureException exception) {
+    return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+        .body(new ErrorResponse("네이버맵 응답 수집에 실패했습니다", exception.category(), exception.stage()));
+  }
+
   @ExceptionHandler(BindException.class)
   public ResponseEntity<ValidationErrorResponse> handleValidation(BindException exception) {
     Map<String, String> errors = new LinkedHashMap<>();
@@ -27,6 +33,6 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(IllegalStateException.class)
   public ResponseEntity<ErrorResponse> handleIllegalState(IllegalStateException exception) {
     return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-        .body(new ErrorResponse("네이버맵 응답 수집에 실패했습니다", exception.getMessage()));
+        .body(new ErrorResponse("네이버맵 응답 수집에 실패했습니다", "capture_error", "worker"));
   }
 }
