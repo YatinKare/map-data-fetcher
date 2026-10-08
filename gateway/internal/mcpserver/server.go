@@ -77,7 +77,7 @@ func NewHandler(client NaverSearchClient, version string, logger ToolOutcomeLogg
 		server,
 		&mcp.Tool{
 			Name:        naverSearchToolName,
-			Description: "Search Naver Maps and return the current raw extracted JSON.",
+			Description: "Search Naver Maps and return compact place results with normalized fields.",
 		},
 		tool.handle,
 	)
@@ -85,7 +85,7 @@ func NewHandler(client NaverSearchClient, version string, logger ToolOutcomeLogg
 		server,
 		&mcp.Tool{
 			Name:        naverCoordinateSearchToolName,
-			Description: "Search Naver Maps around a WGS84 coordinate and return the current raw extracted JSON. Provide longitude and latitude in decimal degrees.",
+			Description: "Search Naver Maps around a WGS84 coordinate and return compact place results with normalized fields. Provide longitude and latitude in decimal degrees.",
 		},
 		coordinateTool.handle,
 	)

@@ -6,6 +6,8 @@ import com.example.mapdatafetcher.dto.NaverMapSearchRequest;
 import com.example.mapdatafetcher.exception.CaptureException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -17,6 +19,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.openqa.selenium.By;
 import org.openqa.selenium.Keys;
 import org.openqa.selenium.PageLoadStrategy;
@@ -46,6 +50,7 @@ public class NaverMapSearchService {
   private static final Duration ELEMENT_WAIT_TIMEOUT = Duration.ofSeconds(30);
   private static final Duration SEARCH_RESPONSE_TIMEOUT = Duration.ofSeconds(60);
   private static final String DEFAULT_MAP_CAMERA = "15.00,0,0,0,dh";
+  private static final Pattern NUMERIC_RANK = Pattern.compile("\\d+");
   private static final By SEARCH_INPUT_SELECTOR =
       By.cssSelector(
           "input.input_search, input[type='search'], input[placeholder], input[aria-label]");
@@ -330,7 +335,7 @@ public class NaverMapSearchService {
   private JsonNode extractFirstPageItems(JsonNode response) {
     JsonNode list = response.path("result").path("place").path("list");
     if (list.isArray()) {
-      return list;
+      return normalizeItems(list);
     }
 
     throw new CaptureException(
@@ -340,7 +345,7 @@ public class NaverMapSearchService {
   private JsonNode extractGraphqlItems(JsonNode response) {
     JsonNode items = findItemsNode(response.path("data"));
     if (items != null) {
-      return items;
+      return normalizeItems(items);
     }
 
     if (response.isArray()) {
@@ -351,14 +356,14 @@ public class NaverMapSearchService {
           continue;
         }
         if (!candidate.isEmpty()) {
-          return candidate;
+          return normalizeItems(candidate);
         }
         if (firstEmptyItems == null) {
           firstEmptyItems = candidate;
         }
       }
       if (firstEmptyItems != null) {
-        return firstEmptyItems;
+        return normalizeItems(firstEmptyItems);
       }
     }
 
@@ -367,6 +372,173 @@ public class NaverMapSearchService {
         "response_body",
         "Paginated response did not contain result items",
         null);
+  }
+
+  private ArrayNode normalizeItems(JsonNode items) {
+    ArrayNode normalized = objectMapper.createArrayNode();
+    for (JsonNode item : items) {
+      if (item.isObject()) {
+        normalized.add(normalizeItem(item));
+      }
+    }
+    return normalized;
+  }
+
+  private ObjectNode normalizeItem(JsonNode item) {
+    ObjectNode result = objectMapper.createObjectNode();
+
+    String rank = textValue(item, "rank");
+    if (rank != null) {
+      Matcher rankMatcher = NUMERIC_RANK.matcher(rank);
+      if (rankMatcher.matches()) {
+        result.put("rank", Integer.parseInt(rank));
+      }
+    }
+    copyText(item, result, "id", "id");
+    copyText(item, result, "name", "name");
+    JsonNode category = item.get("category");
+    if (category != null && !category.isNull() && !category.isEmpty()) {
+      result.set("category", category.deepCopy());
+    }
+    copyText(item, result, "roadAddress", "road_address");
+
+    ObjectNode coordinates = objectMapper.createObjectNode();
+    putCoordinate(item, coordinates, "x", "longitude");
+    putCoordinate(item, coordinates, "y", "latitude");
+    if (!coordinates.isEmpty()) {
+      result.set("coordinates", coordinates);
+    }
+
+    copyFirstText(item, result, "tel", "tel", "virtualTel");
+    copyText(item, result, "thumUrl", "thumbnail_url");
+    copyText(item, result, "homePage", "homepage");
+    copyText(item, result, "menuInfo", "menu_info");
+    addBusinessInformation(item, result);
+    addReservationOptions(item, result);
+    return result;
+  }
+
+  private void addBusinessInformation(JsonNode item, ObjectNode result) {
+    JsonNode businessStatus = item.path("businessStatus");
+    JsonNode status = businessStatus.path("status");
+    String statusText = firstNonBlank(textValue(status, "text"), textValue(status, "description"));
+    if (statusText != null) {
+      result.put("business_status", statusText);
+    }
+
+    String businessHours = formatTimeRange(textValue(businessStatus, "businessHours"));
+    if (businessHours != null) {
+      result.put("business_hours", businessHours);
+    }
+    String breakTime = formatTimeRange(textValue(businessStatus, "breakTime"));
+    if (breakTime != null) {
+      result.put("break_time", breakTime);
+    }
+    String lastOrder = formatTime(textValue(businessStatus, "lastOrder"));
+    if (lastOrder != null) {
+      result.put("last_order", lastOrder);
+    }
+  }
+
+  private void addReservationOptions(JsonNode item, ObjectNode result) {
+    JsonNode labels = item.path("reservationLabel");
+    ArrayNode options = objectMapper.createArrayNode();
+    addReservationOption(labels, options, "standard", "reservation");
+    addReservationOption(labels, options, "preOrder", "pre-order");
+    addReservationOption(labels, options, "table", "table");
+    addReservationOption(labels, options, "takeout", "takeout");
+    if (!options.isEmpty()) {
+      result.set("reservation_options", options);
+    }
+  }
+
+  private void addReservationOption(
+      JsonNode labels, ArrayNode options, String sourceField, String outputValue) {
+    if (labels.path(sourceField).asBoolean(false)) {
+      options.add(outputValue);
+    }
+  }
+
+  private void putCoordinate(
+      JsonNode item, ObjectNode coordinates, String sourceField, String outputField) {
+    String value = textValue(item, sourceField);
+    if (value == null) {
+      return;
+    }
+    try {
+      coordinates.put(outputField, Double.parseDouble(value));
+    } catch (NumberFormatException ignored) {
+      // Ignore malformed upstream coordinates instead of passing through unstable values.
+    }
+  }
+
+  private void copyText(
+      JsonNode source, ObjectNode destination, String sourceField, String outputField) {
+    String value = textValue(source, sourceField);
+    if (value != null) {
+      destination.put(outputField, value);
+    }
+  }
+
+  private void copyFirstText(
+      JsonNode source, ObjectNode destination, String outputField, String... sourceFields) {
+    for (String sourceField : sourceFields) {
+      String value = textValue(source, sourceField);
+      if (value != null) {
+        destination.put(outputField, value);
+        return;
+      }
+    }
+  }
+
+  private String textValue(JsonNode source, String field) {
+    JsonNode value = source.get(field);
+    if (value == null || value.isNull()) {
+      return null;
+    }
+    String text = value.asText().trim();
+    return text.isEmpty() ? null : text;
+  }
+
+  private String firstNonBlank(String... values) {
+    for (String value : values) {
+      if (value != null && !value.isBlank()) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  private String formatTimeRange(String value) {
+    if (value == null) {
+      return null;
+    }
+    String[] parts = value.split("~", -1);
+    if (parts.length != 2) {
+      return null;
+    }
+    String start = formatTime(parts[0]);
+    String end = formatTime(parts[1]);
+    return start == null || end == null ? null : start + "–" + end;
+  }
+
+  private String formatTime(String value) {
+    if (value == null) {
+      return null;
+    }
+    String digits = value.replaceAll("\\D", "");
+    if (digits.length() == 12) {
+      digits = digits.substring(8);
+    }
+    if (digits.length() != 4) {
+      return null;
+    }
+    int hours = Integer.parseInt(digits.substring(0, 2));
+    int minutes = Integer.parseInt(digits.substring(2));
+    if (hours > 24 || minutes > 59 || (hours == 24 && minutes != 0)) {
+      return null;
+    }
+    return digits.substring(0, 2) + ":" + digits.substring(2);
   }
 
   private JsonNode findItemsNode(JsonNode node) {

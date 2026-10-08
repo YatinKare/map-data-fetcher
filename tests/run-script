@@ -317,6 +317,30 @@ validate_result_count() {
   printf '%s\n' "$count"
 }
 
+validate_result_schema() {
+  local raw_file="$1"
+  local label="$2"
+  jq -e '
+    type == "array" and
+    all(.[];
+      . as $result |
+      type == "object" and
+      ((has("rank") | not) or (.rank | type == "number")) and
+      ((has("coordinates") | not) or
+        (.coordinates | type == "object" and
+          ((has("longitude") | not) or (.longitude | type == "number")) and
+          ((has("latitude") | not) or (.latitude | type == "number")))) and
+      ((has("tel") | not) or (.tel | type == "string" and length > 0)) and
+      ((has("business_hours") | not) or (.business_hours | test("^[0-9]{2}:[0-9]{2}–[0-9]{2}:[0-9]{2}$"))) and
+      ((has("break_time") | not) or (.break_time | test("^[0-9]{2}:[0-9]{2}–[0-9]{2}:[0-9]{2}$"))) and
+      ((has("last_order") | not) or (.last_order | test("^[0-9]{2}:[0-9]{2}$"))) and
+      ((has("reservation_options") | not) or (.reservation_options | type == "array")) and
+      (["reviewCount", "placeReviewCount", "distance", "indoor", "subway", "bizhourInfo", "virtualTel", "businessStatus", "roadAddress", "thumUrl", "homePage", "menuInfo", "reservationLabel"] | all(.[]; . as $field | ($result | has($field) | not)))
+    )
+  ' "$raw_file" >/dev/null \
+    || die "$label did not match the normalized place-result schema"
+}
+
 enable_mcp_logging_for_check() {
   case "$MCP_LOGGING_CHECK" in
     false|0|no|"") return 0 ;;
@@ -547,6 +571,7 @@ main() {
     die "keyword MCP request did not return valid raw JSON: ${request_error:-unparseable response}"
   fi
   response_result_count="$(validate_result_count "$mcp_raw_file" "keyword MCP request")"
+  validate_result_schema "$mcp_raw_file" "keyword MCP request"
   run_status="failed"
   if [[ "$request_exit" -eq 0 && "$http_code" == "200" ]]; then
     run_status="passed"
@@ -571,6 +596,7 @@ main() {
   validate_mcp_tool_response "$restart_response_file" "$restart_raw_file" \
     || die "second MCP request did not return valid raw JSON"
   restart_result_count="$(validate_result_count "$restart_raw_file" "restarted keyword MCP request")"
+  validate_result_schema "$restart_raw_file" "restarted keyword MCP request"
   after_restart_snapshot="$(snapshot after_restart)"
 
   coordinate_response_file="$WORK_DIR/mcp-coordinate-response.json"
@@ -584,6 +610,7 @@ main() {
   validate_mcp_tool_response "$coordinate_response_file" "$coordinate_raw_file" \
     || die "coordinate MCP request did not return valid raw JSON"
   coordinate_result_count="$(validate_result_count "$coordinate_raw_file" "coordinate MCP request")"
+  validate_result_schema "$coordinate_raw_file" "coordinate MCP request"
   wait_for_worker_exit || die "restarted Java worker did not stop after coordinate search within ${IDLE_WAIT_SECONDS}s"
   after_restart_idle_shutdown_snapshot="$(snapshot after_restart_idle_shutdown)"
 
