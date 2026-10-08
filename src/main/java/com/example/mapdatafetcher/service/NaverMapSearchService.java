@@ -64,8 +64,7 @@ public class NaverMapSearchService {
     ChromeDriver driver = createDriver();
     try {
       driver.executeCdpCommand("Network.enable", Map.of());
-      Integer requestedPage = request.page();
-      int targetPage = requestedPage == null ? 1 : requestedPage;
+      int targetPage = request.page();
       driver.get(buildSearchUrl(request.q()));
       JsonNode result = captureSearchResults(driver, targetPage);
       LOGGER.info("Naver keyword search completed for page {}", targetPage);
@@ -83,8 +82,7 @@ public class NaverMapSearchService {
     ChromeDriver driver = createDriver();
     try {
       driver.executeCdpCommand("Network.enable", Map.of());
-      Integer requestedPage = request.page();
-      int targetPage = requestedPage == null ? 1 : requestedPage;
+      int targetPage = request.page();
       driver.get(buildCoordinateUrl(request.longitude(), request.latitude()));
       submitSearchKeyword(driver, request.query());
       JsonNode result = captureSearchResults(driver, targetPage);
