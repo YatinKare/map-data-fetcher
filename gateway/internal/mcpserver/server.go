@@ -132,11 +132,19 @@ func (t *naverSearchTool) handle(
 		}
 		return nil, nil, fmt.Errorf("Naver search failed: %w", err)
 	}
+	normalizedJSON, err := normalizeNaverResults(rawJSON)
+	if err != nil {
+		outcome.IsError = true
+		outcome.FailureCategory = "invalid_response"
+		outcome.FailureStage = "response_normalization"
+		return nil, nil, fmt.Errorf("Naver search returned invalid place results: %w", err)
+	}
 
-	setResultCount(&outcome, rawJSON)
+	outcome.ResponseBytes = len(normalizedJSON)
+	setResultCount(&outcome, normalizedJSON)
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: string(rawJSON)},
+			&mcp.TextContent{Text: string(normalizedJSON)},
 		},
 	}, nil, nil
 }
@@ -173,11 +181,19 @@ func (t *naverCoordinateSearchTool) handle(
 		}
 		return nil, nil, fmt.Errorf("Naver coordinate search failed: %w", err)
 	}
+	normalizedJSON, err := normalizeNaverResults(rawJSON)
+	if err != nil {
+		outcome.IsError = true
+		outcome.FailureCategory = "invalid_response"
+		outcome.FailureStage = "response_normalization"
+		return nil, nil, fmt.Errorf("Naver coordinate search returned invalid place results: %w", err)
+	}
 
-	setResultCount(&outcome, rawJSON)
+	outcome.ResponseBytes = len(normalizedJSON)
+	setResultCount(&outcome, normalizedJSON)
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: string(rawJSON)},
+			&mcp.TextContent{Text: string(normalizedJSON)},
 		},
 	}, nil, nil
 }
