@@ -18,6 +18,134 @@ const (
 	naverCoordinateSearchToolName = "naver_map_coordinate_search"
 )
 
+var (
+	keywordSearchInputSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{
+				"type":        "string",
+				"description": "Required nonblank place, business, or category text to search for on Naver Maps.",
+			},
+			"page": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"maximum":     5,
+				"default":     1,
+				"description": "Result page to return. Defaults to 1; allowed values are 1 through 5.",
+			},
+		},
+		"required":             []string{"query"},
+		"additionalProperties": false,
+	}
+	coordinateSearchInputSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{
+				"type":        "string",
+				"description": "Required nonblank place, business, or category text to search for on Naver Maps.",
+			},
+			"longitude": map[string]any{
+				"type":        "number",
+				"minimum":     -180,
+				"maximum":     180,
+				"description": "Required WGS84 longitude in decimal degrees, from -180 to 180.",
+			},
+			"latitude": map[string]any{
+				"type":        "number",
+				"minimum":     -90,
+				"maximum":     90,
+				"description": "Required WGS84 latitude in decimal degrees, from -90 to 90.",
+			},
+			"page": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"maximum":     5,
+				"default":     1,
+				"description": "Result page to return. Defaults to 1; allowed values are 1 through 5.",
+			},
+		},
+		"required":             []string{"query", "longitude", "latitude"},
+		"additionalProperties": false,
+	}
+	placeSearchOutputSchema = map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"rank": map[string]any{
+					"type":        "integer",
+					"description": "Place rank on this result page, when supplied by Naver.",
+				},
+				"id": map[string]any{
+					"type":        "string",
+					"description": "Naver place identifier.",
+				},
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Place name.",
+				},
+				"category": map[string]any{
+					"type":        "array",
+					"description": "Naver place category labels.",
+					"items":       map[string]any{"type": "string"},
+				},
+				"road_address": map[string]any{
+					"type":        "string",
+					"description": "Road-name address.",
+				},
+				"coordinates": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"longitude": map[string]any{"type": "number", "description": "WGS84 longitude in decimal degrees."},
+						"latitude":  map[string]any{"type": "number", "description": "WGS84 latitude in decimal degrees."},
+					},
+					"additionalProperties": false,
+				},
+				"tel": map[string]any{
+					"type":        "string",
+					"description": "Listed telephone number, falling back to Naver's virtual number when needed.",
+				},
+				"business_status": map[string]any{
+					"type":        "string",
+					"description": "Naver's short business status text.",
+				},
+				"business_hours": map[string]any{
+					"type":        "string",
+					"description": "Local business hours as HH:mm–HH:mm.",
+				},
+				"break_time": map[string]any{
+					"type":        "string",
+					"description": "Local break time as HH:mm–HH:mm.",
+				},
+				"last_order": map[string]any{
+					"type":        "string",
+					"description": "Local last-order time as HH:mm.",
+				},
+				"thumbnail_url": map[string]any{
+					"type":   "string",
+					"format": "uri",
+				},
+				"homepage": map[string]any{
+					"type":   "string",
+					"format": "uri",
+				},
+				"menu_info": map[string]any{
+					"type":        "string",
+					"description": "Compact menu text from Naver, when available.",
+				},
+				"reservation_options": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "string",
+						"enum": []string{"reservation", "pre-order", "table", "takeout"},
+					},
+				},
+			},
+			"additionalProperties": false,
+		},
+	}
+)
+
 // NaverSearchClient is the private Java worker boundary used by the MCP tool.
 type NaverSearchClient interface {
 	SearchNaver(context.Context, string, int) ([]byte, worker.SearchMetadata, error)
@@ -72,20 +200,40 @@ func NewHandler(client NaverSearchClient, version string, logger ToolOutcomeLogg
 	server := mcp.NewServer(&mcp.Implementation{Name: "map-data-fetcher", Version: version}, nil)
 	tool := &naverSearchTool{client: client, logger: logger}
 	coordinateTool := &naverCoordinateSearchTool{client: client, logger: logger}
+	destructiveHint := false
+	openWorldHint := true
 
 	mcp.AddTool(
 		server,
 		&mcp.Tool{
-			Name:        naverSearchToolName,
-			Description: "Search Naver Maps and return compact place results with normalized fields.",
+			Name:         naverSearchToolName,
+			Title:        "Search Naver Maps by keyword",
+			Description:  "Find Naver Maps places from a text query. Use when the user names a place, business, or category, including a location written in prose without numeric coordinates. For a search centered on coordinates the user supplied as numbers, use naver_map_coordinate_search. Returns one page of compact place records.",
+			InputSchema:  keywordSearchInputSchema,
+			OutputSchema: placeSearchOutputSchema,
+			Annotations: &mcp.ToolAnnotations{
+				ReadOnlyHint:    true,
+				DestructiveHint: &destructiveHint,
+				IdempotentHint:  true,
+				OpenWorldHint:   &openWorldHint,
+			},
 		},
 		tool.handle,
 	)
 	mcp.AddTool(
 		server,
 		&mcp.Tool{
-			Name:        naverCoordinateSearchToolName,
-			Description: "Search Naver Maps around a WGS84 coordinate and return compact place results with normalized fields. Provide longitude and latitude in decimal degrees.",
+			Name:         naverCoordinateSearchToolName,
+			Title:        "Search Naver Maps near coordinates",
+			Description:  "Find Naver Maps places near an explicit WGS84 longitude and latitude supplied by the user in decimal degrees. Use this only when both numeric coordinates are available; a location mentioned only in prose is not enough. The query selects the place, business, or category to find near that point. Returns one page of compact place records.",
+			InputSchema:  coordinateSearchInputSchema,
+			OutputSchema: placeSearchOutputSchema,
+			Annotations: &mcp.ToolAnnotations{
+				ReadOnlyHint:    true,
+				DestructiveHint: &destructiveHint,
+				IdempotentHint:  true,
+				OpenWorldHint:   &openWorldHint,
+			},
 		},
 		coordinateTool.handle,
 	)
@@ -130,7 +278,7 @@ func (t *naverSearchTool) handle(
 		if errors.Is(err, worker.ErrSearchBusy) {
 			return searchBusyResult(), nil, nil
 		}
-		return nil, nil, fmt.Errorf("Naver search failed: %w", err)
+		return searchFailureResult("keyword", err), nil, nil
 	}
 	normalizedJSON, err := normalizeNaverResults(rawJSON)
 	if err != nil {
@@ -146,7 +294,7 @@ func (t *naverSearchTool) handle(
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: string(normalizedJSON)},
 		},
-	}, nil, nil
+	}, json.RawMessage(normalizedJSON), nil
 }
 
 func (t *naverCoordinateSearchTool) handle(
@@ -179,7 +327,7 @@ func (t *naverCoordinateSearchTool) handle(
 		if errors.Is(err, worker.ErrSearchBusy) {
 			return searchBusyResult(), nil, nil
 		}
-		return nil, nil, fmt.Errorf("Naver coordinate search failed: %w", err)
+		return searchFailureResult("coordinate", err), nil, nil
 	}
 	normalizedJSON, err := normalizeNaverResults(rawJSON)
 	if err != nil {
@@ -195,7 +343,7 @@ func (t *naverCoordinateSearchTool) handle(
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: string(normalizedJSON)},
 		},
-	}, nil, nil
+	}, json.RawMessage(normalizedJSON), nil
 }
 
 func applySearchMetadata(outcome *ToolOutcome, metadata worker.SearchMetadata, rawJSON []byte) {
@@ -217,6 +365,20 @@ func searchBusyResult() *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: worker.ErrSearchBusy.Error()},
+		},
+		IsError: true,
+	}
+}
+
+func searchFailureResult(searchType string, err error) *mcp.CallToolResult {
+	category, _ := worker.FailureDetails(err)
+	message := fmt.Sprintf("Naver Maps %s search is temporarily unavailable. Please retry shortly.", searchType)
+	if category == "timeout" {
+		message = fmt.Sprintf("Naver Maps %s search timed out. Please retry the same search.", searchType)
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: message},
 		},
 		IsError: true,
 	}

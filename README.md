@@ -22,17 +22,28 @@ documentation or a second external interface.
 
 The server exposes two read-only tools:
 
-- `naver_map_search`: keyword search using `query` and optional `page`.
-- `naver_map_coordinate_search`: coordinate search using `query`, `x`
-  (longitude), `y` (latitude), and optional `page`.
+- `naver_map_search` searches by required, nonblank `query` text. Use it when
+  the request names a place, business, category, or location in prose. A
+  location written in prose does not provide coordinates.
+- `naver_map_coordinate_search` searches near a required numeric `longitude`
+  and `latitude`, along with a required, nonblank `query`. Use it only when
+  both coordinates are explicitly available. Coordinates use WGS84 decimal
+  degrees: longitude is from -180 to 180 and latitude is from -90 to 90.
+
+Both tools accept an optional `page`, defaulting to 1; valid pages are 1
+through 5. Use a later page when the user asks for more results.
 
 Both tools return an array of compact place results. Each result can include
 `rank`, `id`, `name`, `category`, `road_address`, `coordinates`, `tel`,
 `business_status`, `business_hours`, `break_time`, `last_order`,
 `thumbnail_url`, `homepage`, `menu_info`, and `reservation_options`. Fields
-without an upstream value are omitted. Time ranges are returned as local
-`HH:mm–HH:mm` strings. Phone numbers prefer the listed telephone number and
-fall back to Naver's virtual telephone number when needed.
+without an upstream value are omitted. `category` and `reservation_options`
+are arrays of strings. Coordinates contain `longitude` and `latitude` in WGS84
+decimal degrees. Time ranges are returned as local `HH:mm–HH:mm` strings.
+Phone numbers prefer the listed telephone number and fall back to Naver's
+virtual telephone number when needed. MCP clients receive the result as both
+structured data matching the published output schema and JSON text for
+compatibility.
 
 Review counts and Naver-specific distance, indoor, and subway fields are not
 included. For example:
@@ -78,8 +89,11 @@ bash tests/run-script
 ```
 
 The script verifies the configured authentication mode, MCP initialization, tool
-discovery, keyword search, coordinate search, lazy Java startup, idle shutdown,
-and worker restart. Each search must return at least 10 results by default.
+discovery, keyword search, coordinate search, page 2 for both tools, lazy Java
+startup, idle shutdown, and worker restart. Each search must return at least 10
+results by default. Page 2 must include place IDs absent from page 1. The worker
+waits for Naver’s pagination click handler before selecting a page, then matches
+the GraphQL response to that page’s result offset.
 
 ## Tailscale deployment
 

@@ -12,7 +12,7 @@ type normalizedPlace struct {
 	Rank               *int              `json:"rank,omitempty"`
 	ID                 string            `json:"id,omitempty"`
 	Name               string            `json:"name,omitempty"`
-	Category           json.RawMessage   `json:"category,omitempty"`
+	Category           []string          `json:"category,omitempty"`
 	RoadAddress        string            `json:"road_address,omitempty"`
 	Coordinates        *placeCoordinates `json:"coordinates,omitempty"`
 	Tel                string            `json:"tel,omitempty"`
@@ -88,9 +88,7 @@ func normalizeNaverPlace(fields map[string]json.RawMessage) normalizedPlace {
 	if rank, ok := rawInt(fields["rank"]); ok {
 		place.Rank = &rank
 	}
-	if category, ok := nonEmptyJSON(fields["category"]); ok {
-		place.Category = category
-	}
+	place.Category = rawTextArray(fields["category"])
 	longitude, hasLongitude := rawFloat(fields["x"])
 	latitude, hasLatitude := rawFloat(fields["y"])
 	if hasLongitude || hasLatitude {
@@ -175,29 +173,25 @@ func rawFloat(value json.RawMessage) (float64, bool) {
 	return parsed, err == nil
 }
 
-func nonEmptyJSON(value json.RawMessage) (json.RawMessage, bool) {
-	if len(value) == 0 || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-		return nil, false
-	}
-	var decoded any
-	if json.Unmarshal(value, &decoded) != nil {
-		return nil, false
-	}
-	switch decoded := decoded.(type) {
-	case string:
-		if strings.TrimSpace(decoded) == "" {
-			return nil, false
+func rawTextArray(value json.RawMessage) []string {
+	var values []string
+	if json.Unmarshal(value, &values) == nil {
+		result := make([]string, 0, len(values))
+		for _, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				result = append(result, value)
+			}
 		}
-	case []any:
-		if len(decoded) == 0 {
-			return nil, false
-		}
-	case map[string]any:
-		if len(decoded) == 0 {
-			return nil, false
+		return result
+	}
+
+	var single string
+	if json.Unmarshal(value, &single) == nil {
+		if single = strings.TrimSpace(single); single != "" {
+			return []string{single}
 		}
 	}
-	return append(json.RawMessage(nil), value...), true
+	return nil
 }
 
 func formatTimeRange(value string) string {
