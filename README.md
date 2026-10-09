@@ -31,7 +31,8 @@ The server exposes two read-only tools:
   degrees: longitude is from -180 to 180 and latitude is from -90 to 90.
 
 Both tools accept an optional `page`, defaulting to 1; valid pages are 1
-through 5. Use a later page when the user asks for more results.
+through 5. Use a later page when the user asks for more results. A page beyond
+the available results returns an empty array.
 
 Both tools return an array of compact place results. Each result can include
 `rank`, `id`, `name`, `category`, `road_address`, `coordinates`, `tel`,
@@ -91,7 +92,8 @@ bash tests/run-script
 The script verifies the configured authentication mode, MCP initialization, tool
 discovery, keyword search, coordinate search, page 2 for both tools, lazy Java
 startup, idle shutdown, and worker restart. Each search must return at least 10
-results by default. Page 2 must include place IDs absent from page 1. The worker
+results by default. The queries used for pagination checks must have at least
+two pages of results. Page 2 must include place IDs absent from page 1. The worker
 waits for Naver’s pagination click handler before selecting a page, then matches
 the GraphQL response to that page’s result offset.
 

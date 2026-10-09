@@ -229,7 +229,7 @@ public class NaverMapSearchService {
 
     try {
       switchToSearchIframe(driver);
-      return extractGraphqlItems(navigateToPageAndCaptureGraphql(driver, targetPage));
+      return capturePaginatedItems(driver, targetPage);
     } catch (CaptureException exception) {
       throw exception;
     } catch (Exception exception) {
@@ -237,8 +237,7 @@ public class NaverMapSearchService {
     }
   }
 
-  private JsonNode navigateToPageAndCaptureGraphql(ChromeDriver driver, int targetPage)
-      throws Exception {
+  private JsonNode capturePaginatedItems(ChromeDriver driver, int targetPage) throws Exception {
     By targetSelector = By.linkText(String.valueOf(targetPage));
     WebDriverWait wait = new WebDriverWait(driver, SEARCH_RESPONSE_TIMEOUT);
     wait.ignoring(StaleElementReferenceException.class);
@@ -248,19 +247,23 @@ public class NaverMapSearchService {
     wait.until(
         ignored -> {
           WebElement candidate =
-              ExpectedConditions.elementToBeClickable(targetSelector).apply(driver);
+              ExpectedConditions.elementToBeClickable(By.linkText("1")).apply(driver);
           if (candidate == null) {
             return null;
           }
           boolean hasClickHandler =
               Boolean.TRUE.equals(
                   driver.executeScript(
-                      "const el=arguments[0]; return document.readyState === 'complete' && Object.keys(el).some(key => "
+                      "const el=arguments[0]; return Object.keys(el).some(key => "
                           + "(key.startsWith('__reactProps$') || key.startsWith('__reactEventHandlers$')) "
                           + "&& typeof el[key].onClick === 'function');",
                       candidate));
           return hasClickHandler ? candidate : null;
         });
+    if (driver.findElements(targetSelector).isEmpty()) {
+      LOGGER.info("Naver has no result page {}", targetPage);
+      return objectMapper.createArrayNode();
+    }
     String selectedClass = driver.findElement(By.linkText("1")).getAttribute("class");
     LOGGER.info("Naver pagination controls ready for page {}", targetPage);
     for (int attempt = 0; attempt < 2; attempt++) {
@@ -271,8 +274,10 @@ public class NaverMapSearchService {
               selectedClass.equals(driver.findElement(targetSelector).getAttribute("class")));
       LOGGER.info("Naver pagination selected page {}", targetPage);
       try {
-        return parseGraphqlResponse(
-            waitForSearchResponseBody(driver, properties.graphqlResponseUrlKeyword(), targetPage));
+        return extractGraphqlItems(
+            parseGraphqlResponse(
+                waitForSearchResponseBody(
+                    driver, properties.graphqlResponseUrlKeyword(), targetPage)));
       } catch (CaptureException exception) {
         if (attempt > 0 || !"request_aborted".equals(exception.category())) {
           throw exception;

@@ -290,11 +290,8 @@ func (t *naverSearchTool) handle(
 
 	outcome.ResponseBytes = len(normalizedJSON)
 	setResultCount(&outcome, normalizedJSON)
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: string(normalizedJSON)},
-		},
-	}, json.RawMessage(normalizedJSON), nil
+	// The SDK creates both structured content and one JSON text fallback.
+	return nil, json.RawMessage(normalizedJSON), nil
 }
 
 func (t *naverCoordinateSearchTool) handle(
@@ -339,11 +336,8 @@ func (t *naverCoordinateSearchTool) handle(
 
 	outcome.ResponseBytes = len(normalizedJSON)
 	setResultCount(&outcome, normalizedJSON)
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: string(normalizedJSON)},
-		},
-	}, json.RawMessage(normalizedJSON), nil
+	// The SDK creates both structured content and one JSON text fallback.
+	return nil, json.RawMessage(normalizedJSON), nil
 }
 
 func applySearchMetadata(outcome *ToolOutcome, metadata worker.SearchMetadata, rawJSON []byte) {
