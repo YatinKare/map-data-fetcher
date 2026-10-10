@@ -31,7 +31,7 @@ var (
 				"minimum":     1,
 				"maximum":     5,
 				"default":     1,
-				"description": "Result page to return. Defaults to 1; allowed values are 1 through 5.",
+				"description": "Result page to return. Defaults to 1; allowed values are 1 through 5. Returns a tool error if the requested page cannot be found.",
 			},
 		},
 		"required":             []string{"query"},
@@ -61,7 +61,7 @@ var (
 				"minimum":     1,
 				"maximum":     5,
 				"default":     1,
-				"description": "Result page to return. Defaults to 1; allowed values are 1 through 5.",
+				"description": "Result page to return. Defaults to 1; allowed values are 1 through 5. Returns a tool error if the requested page cannot be found.",
 			},
 		},
 		"required":             []string{"query", "longitude", "latitude"},
@@ -278,7 +278,7 @@ func (t *naverSearchTool) handle(
 		if errors.Is(err, worker.ErrSearchBusy) {
 			return searchBusyResult(), nil, nil
 		}
-		return searchFailureResult("keyword", err), nil, nil
+		return searchFailureResult("keyword", page, err), nil, nil
 	}
 	normalizedJSON, err := normalizeNaverResults(rawJSON)
 	if err != nil {
@@ -324,7 +324,7 @@ func (t *naverCoordinateSearchTool) handle(
 		if errors.Is(err, worker.ErrSearchBusy) {
 			return searchBusyResult(), nil, nil
 		}
-		return searchFailureResult("coordinate", err), nil, nil
+		return searchFailureResult("coordinate", page, err), nil, nil
 	}
 	normalizedJSON, err := normalizeNaverResults(rawJSON)
 	if err != nil {
@@ -364,10 +364,12 @@ func searchBusyResult() *mcp.CallToolResult {
 	}
 }
 
-func searchFailureResult(searchType string, err error) *mcp.CallToolResult {
+func searchFailureResult(searchType string, page int, err error) *mcp.CallToolResult {
 	category, _ := worker.FailureDetails(err)
 	message := fmt.Sprintf("Naver Maps %s search is temporarily unavailable. Please retry shortly.", searchType)
-	if category == "timeout" {
+	if category == "page_unavailable" {
+		message = fmt.Sprintf("Could not find Naver result page %d. Try an earlier page.", page)
+	} else if category == "timeout" {
 		message = fmt.Sprintf("Naver Maps %s search timed out. Please retry the same search.", searchType)
 	}
 	return &mcp.CallToolResult{

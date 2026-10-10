@@ -18,7 +18,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 import org.openqa.selenium.By;
-import org.openqa.selenium.Dimension;
 import org.openqa.selenium.Keys;
 import org.openqa.selenium.PageLoadStrategy;
 import org.openqa.selenium.StaleElementReferenceException;
@@ -161,7 +160,7 @@ public class NaverMapSearchService {
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--disable-setuid-sandbox",
-        "--window-size=1367,904");
+        "--window-size=1920,1080");
 
     if (properties.headless()) {
       options.addArguments("--headless=new");
@@ -173,7 +172,7 @@ public class NaverMapSearchService {
 
     ChromeDriver driver = new ChromeDriver(options);
     driver.manage().timeouts().pageLoadTimeout(PAGE_LOAD_TIMEOUT);
-    driver.manage().window().setSize(new Dimension(1367, 904));
+    driver.manage().window().maximize();
     return driver;
   }
 
@@ -261,8 +260,8 @@ public class NaverMapSearchService {
           return hasClickHandler ? candidate : null;
         });
     if (driver.findElements(targetSelector).isEmpty()) {
-      LOGGER.info("Naver has no result page {}", targetPage);
-      return objectMapper.createArrayNode();
+      throw new CaptureException(
+          "page_unavailable", "pagination", "Could not find Naver result page " + targetPage, null);
     }
     String selectedClass = driver.findElement(By.linkText("1")).getAttribute("class");
     LOGGER.info("Naver pagination controls ready for page {}", targetPage);

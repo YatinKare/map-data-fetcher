@@ -31,8 +31,10 @@ The server exposes two read-only tools:
   degrees: longitude is from -180 to 180 and latitude is from -90 to 90.
 
 Both tools accept an optional `page`, defaulting to 1; valid pages are 1
-through 5. Use a later page when the user asks for more results. A page beyond
-the available results returns an empty array.
+through 5. Use a later page when the user asks for more results. If the requested
+page cannot be found, the tool returns an error identifying the page and
+suggesting an earlier page. A successfully retrieved page with no places returns
+an empty array.
 
 Both tools return an array of compact place results. Each result can include
 `rank`, `id`, `name`, `category`, `road_address`, `coordinates`, `tel`,
