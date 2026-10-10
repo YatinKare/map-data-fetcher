@@ -15,7 +15,6 @@ const (
 	defaultHost                = "127.0.0.1"
 	defaultPort                = 3000
 	defaultServiceName         = "map-data-gateway"
-	defaultVersion             = "0.1.0"
 	defaultShutdownTimeout     = 5 * time.Second
 	defaultJavaBaseURL         = "http://127.0.0.1:8080"
 	defaultJavaBin             = "java"
@@ -44,7 +43,7 @@ type Config struct {
 }
 
 // LoadFromEnv loads gateway configuration from environment variables.
-func LoadFromEnv(getenv func(string) string) (Config, error) {
+func LoadFromEnv(getenv func(string) string, version string) (Config, error) {
 	authMode := withDefault(getenv("GATEWAY_AUTH_MODE"), AuthModeRequired)
 	if authMode != AuthModeRequired && authMode != AuthModeNone {
 		return Config{}, fmt.Errorf("GATEWAY_AUTH_MODE must be %q or %q", AuthModeRequired, AuthModeNone)
@@ -112,7 +111,7 @@ func LoadFromEnv(getenv func(string) string) (Config, error) {
 		JavaStartupTimeout:  javaStartupTimeout,
 		JavaShutdownTimeout: javaShutdownTimeout,
 		ServiceName:         withDefault(getenv("GATEWAY_SERVICE_NAME"), defaultServiceName),
-		Version:             withDefault(getenv("GATEWAY_VERSION"), defaultVersion),
+		Version:             version,
 		ShutdownTimeout:     shutdownTimeout,
 	}, nil
 }

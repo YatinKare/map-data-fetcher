@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RELEASE_TAG='@RELEASE_TAG@'
+REPOSITORY='YatinKare/map-data-fetcher'
+ASSET="map-data-fetcher-${RELEASE_TAG}-linux-amd64.tar.gz"
+RELEASE_URL="https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}"
+
+die() {
+  printf 'map-data-fetcher installer: %s\n' "$1" >&2
+  exit 1
+}
+
+[[ "$(uname -s)" == Linux ]] || die 'only Linux is supported by this release'
+case "$(uname -m)" in
+  x86_64|amd64) ;;
+  *) die 'only Linux x86-64 is supported by this release' ;;
+esac
+
+for command in curl tar sha256sum install mktemp od tr; do
+  command -v "$command" >/dev/null 2>&1 || die "missing command: $command"
+done
+
+[[ -n "${HOME:-}" ]] || die 'HOME must be set'
+TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TEMP_DIR"' EXIT
+
+printf 'Downloading map-data-fetcher %s...\n' "$RELEASE_TAG"
+curl --fail --location --silent --show-error \
+  "$RELEASE_URL/$ASSET" -o "$TEMP_DIR/$ASSET"
+curl --fail --location --silent --show-error \
+  "$RELEASE_URL/$ASSET.sha256" -o "$TEMP_DIR/$ASSET.sha256"
+
+printf 'Verifying download...\n'
+(cd "$TEMP_DIR" && sha256sum --check "$ASSET.sha256")
+tar -xzf "$TEMP_DIR/$ASSET" -C "$TEMP_DIR"
+BUNDLE_DIR="$TEMP_DIR/map-data-fetcher-${RELEASE_TAG}-linux-amd64"
+[[ -d "$BUNDLE_DIR" ]] || die 'release archive has an unexpected layout'
+
+BIN_DIR="$HOME/.local/libexec/map-data-fetcher"
+DATA_DIR="$HOME/.local/share/map-data-fetcher"
+CONFIG_DIR="$HOME/.config/map-data-fetcher"
+SYSTEMD_DIR="$HOME/.config/systemd/user"
+ENV_FILE="$CONFIG_DIR/gateway.env"
+
+install -Dm755 "$BUNDLE_DIR/bin/map-data-gateway" \
+  "$BIN_DIR/map-data-gateway"
+install -Dm644 "$BUNDLE_DIR/lib/map-data-fetcher.jar" \
+  "$DATA_DIR/map-data-fetcher.jar"
+install -Dm644 "$BUNDLE_DIR/systemd/map-data-fetcher.service" \
+  "$SYSTEMD_DIR/map-data-fetcher.service"
+install -d -m 700 "$CONFIG_DIR"
+
+if [[ ! -e "$ENV_FILE" ]]; then
+  TOKEN="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  [[ "$TOKEN" =~ ^[[:xdigit:]]{64}$ ]] || die 'could not generate an authentication token'
+  umask 077
+  printf 'GATEWAY_AUTH_MODE=required\nGATEWAY_AUTH_TOKEN=%s\n' "$TOKEN" > "$ENV_FILE"
+fi
+chmod 600 "$ENV_FILE"
+
+if command -v systemctl >/dev/null 2>&1 \
+  && systemctl --user show-environment >/dev/null 2>&1; then
+  systemctl --user daemon-reload
+  systemctl --user enable map-data-fetcher.service
+  if systemctl --user is-active --quiet map-data-fetcher.service; then
+    systemctl --user restart map-data-fetcher.service
+  else
+    systemctl --user start map-data-fetcher.service
+  fi
+  printf 'Installed and started map-data-fetcher.service.\n'
+else
+  printf 'Installed files. Start the service in a user systemd session with:\n'
+  printf '  systemctl --user daemon-reload && systemctl --user enable --now map-data-fetcher.service\n'
+fi
+
+printf '\nMCP endpoint: http://127.0.0.1:3000/mcp\n'
+printf 'Bearer token is stored in: %s\n' "$ENV_FILE"
+missing_runtime=()
+if command -v java >/dev/null 2>&1; then
+  java_major="$(java -version 2>&1 | awk -F'"' '/version/ { split($2, parts, "."); if (parts[1] == "1") print parts[2]; else print parts[1]; exit }')"
+  if [[ ! "$java_major" =~ ^[0-9]+$ ]] || ((java_major < 17)); then
+    missing_runtime+=('Java 17 or newer')
+  fi
+else
+  missing_runtime+=('Java 17 or newer')
+fi
+if ! command -v google-chrome >/dev/null 2>&1 \
+  && ! command -v google-chrome-stable >/dev/null 2>&1 \
+  && ! command -v chromium >/dev/null 2>&1 \
+  && ! command -v chromium-browser >/dev/null 2>&1; then
+  missing_runtime+=(Chrome/Chromium)
+fi
+command -v chromedriver >/dev/null 2>&1 || missing_runtime+=(ChromeDriver)
+if ((${#missing_runtime[@]} > 0)); then
+  printf 'Install these runtime requirements before searching: %s.\n' \
+    "${missing_runtime[*]}"
+else
+  printf 'Runtime requirements detected: Java, Chrome/Chromium, ChromeDriver.\n'
+fi

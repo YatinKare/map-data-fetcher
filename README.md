@@ -116,3 +116,22 @@ add rate limiting and other abuse protections before exposing it publicly.
 The Java application still exposes its private worker routes under
 `/api/naver-map/*` and `/healthz` on port `8080`. Do not expose that port
 through Tailscale or another public proxy.
+
+## Install a release
+
+On Linux x86-64, install the latest release for the current user with:
+
+```bash
+curl -fsSL https://github.com/YatinKare/map-data-fetcher/releases/latest/download/install.sh | bash
+```
+
+The worker requires Java 17 or newer, Chrome or Chromium, and a matching
+ChromeDriver.
+See [the install guide](docs/INSTALL.md) for the endpoint and configuration
+locations.
+
+## Build a release
+
+Maintainers can build a release bundle from a clean checkout of its exact Git
+tag with `bash scripts/build-release.sh vX.Y.Z`. See
+[the release guide](docs/RELEASE.md) for build requirements.

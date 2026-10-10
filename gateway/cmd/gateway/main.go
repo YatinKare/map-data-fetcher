@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -9,10 +10,16 @@ import (
 
 	"github.com/YatinKare/map-data-fetcher/gateway/internal/config"
 	"github.com/YatinKare/map-data-fetcher/gateway/internal/server"
+	"github.com/YatinKare/map-data-fetcher/gateway/internal/version"
 )
 
 func main() {
-	cfg, err := config.LoadFromEnv(os.Getenv)
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Printf("map-data-gateway %s\n", version.Version)
+		return
+	}
+
+	cfg, err := config.LoadFromEnv(os.Getenv, version.Version)
 	if err != nil {
 		log.Fatalf("invalid gateway configuration: %v", err)
 	}
