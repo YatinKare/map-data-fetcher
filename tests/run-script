@@ -16,8 +16,8 @@ GATEWAY_AUTH_MODE="${GATEWAY_AUTH_MODE:-none}"
 GATEWAY_AUTH_TOKEN="${GATEWAY_AUTH_TOKEN:-new-token123}"
 QUERY="${1:-노원역 맛집}"
 COORDINATE_QUERY="${COORDINATE_QUERY:-카페}"
-COORDINATE_LONGITUDE="${COORDINATE_LONGITUDE:-127.105649}"
-COORDINATE_LATITUDE="${COORDINATE_LATITUDE:-37.64349}"
+COORDINATE_LONGITUDE="${COORDINATE_LONGITUDE:-126.9784}"
+COORDINATE_LATITUDE="${COORDINATE_LATITUDE:-37.5667}"
 JAR_PATH="${2:-}"
 GATEWAY_BIN="${GATEWAY_BIN:-$REPO_ROOT/build/baseline/map-data-gateway}"
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-60}"
@@ -298,11 +298,14 @@ validate_mcp_tool_response() {
     .jsonrpc == "2.0" and
     (.error? | not) and
     (.result.isError != true) and
-    (.result.content | length > 0) and
+    (.result.content | length == 1) and
     (.result.content[0].type == "text")
-  ' "$response_file" >/dev/null
-  jq -er '.result.content[0].text' "$response_file" > "$raw_file"
-  jq empty "$raw_file" >/dev/null
+  ' "$response_file" >/dev/null || return 1
+  jq -er '.result.content[0].text' "$response_file" > "$raw_file" || return 1
+  jq empty "$raw_file" >/dev/null || return 1
+  jq -e '.result.structuredContent == (.result.content[0].text | fromjson)' \
+    "$response_file" >/dev/null \
+    || die "MCP structuredContent did not match the JSON text result"
 }
 
 validate_result_count() {
@@ -326,6 +329,8 @@ validate_result_schema() {
       . as $result |
       type == "object" and
       ((has("rank") | not) or (.rank | type == "number")) and
+      ((has("category") | not) or
+        (.category | type == "array" and all(.[]; type == "string"))) and
       ((has("coordinates") | not) or
         (.coordinates | type == "object" and
           ((has("longitude") | not) or (.longitude | type == "number")) and
@@ -360,6 +365,29 @@ enable_mcp_logging_for_check() {
   die "gateway did not confirm MCP logging was enabled"
 }
 
+validate_pagination() {
+  local tool_name="$1" first_page_file="$2" arguments="$3" label="$4" request_id="$5"
+  local request_file="$WORK_DIR/$label-page2-request.json"
+  local response_file="$WORK_DIR/$label-page2-response.json"
+  local raw_file="$WORK_DIR/$label-page2-raw.json"
+  local http_code result_count
+  jq -cn --arg tool "$tool_name" --argjson arguments "$arguments" --argjson id "$request_id" \
+    '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:$tool,arguments:($arguments + {page:2})}}' \
+    > "$request_file"
+  http_code="$(post_mcp_json "$request_file" "$response_file")"
+  [[ "$http_code" == "200" ]] || die "$label page 2 failed: HTTP $http_code"
+  validate_mcp_tool_response "$response_file" "$raw_file" \
+    || die "$label page 2 did not return valid MCP results"
+  result_count="$(validate_result_count "$raw_file" "$label page 2")"
+  validate_result_schema "$raw_file" "$label page 2"
+  jq -e --slurpfile first "$first_page_file" '
+    ($first[0] | map(.id) | map(select(. != null))) as $first_ids |
+    any(.[]; .id != null and (.id as $id | $first_ids | index($id) == null))
+  ' "$raw_file" >/dev/null || die "$label page 2 returned no new place IDs"
+  printf -v "${label}_page2_result_count" '%s' "$result_count"
+  printf 'Validated %s page 2: %s results with new place IDs\n' "$label" "$result_count"
+}
+
 validate_tool_outcome_logs() {
   local outcomes_file="$WORK_DIR/tool-outcomes.json"
   local requests_file="$WORK_DIR/mcp-requests.json"
@@ -376,12 +404,16 @@ validate_tool_outcome_logs() {
     --argjson keyword_count "$response_result_count" \
     --argjson restart_count "$restart_result_count" \
     --argjson coordinate_count "$coordinate_result_count" \
+    --argjson keyword_page2_count "$keyword_page2_result_count" \
+    --argjson coordinate_page2_count "$coordinate_page2_result_count" \
     --slurpfile requests "$requests_file" \
     '
-      length == 3 and
+      length == 5 and
       (.[0].tool_name == "naver_map_search" and .[0].result_count == $keyword_count) and
       (.[1].tool_name == "naver_map_search" and .[1].result_count == $restart_count) and
       (.[2].tool_name == "naver_map_coordinate_search" and .[2].result_count == $coordinate_count) and
+      (.[3].tool_name == "naver_map_search" and .[3].result_count == $keyword_page2_count) and
+      (.[4].tool_name == "naver_map_coordinate_search" and .[4].result_count == $coordinate_page2_count) and
       all(.[];
         .is_error == false and
         .duration_ms >= 0 and
@@ -517,10 +549,32 @@ main() {
   mcp_http_code="$(post_mcp_json "$mcp_tools_request" "$mcp_tools_response")"
   [[ "$mcp_http_code" == "200" ]] || die "MCP tools/list failed: HTTP $mcp_http_code"
   jq -e '
-    (.result.tools | map(.name) | index("naver_map_search") != null) and
-    (.result.tools | map(.name) | index("naver_map_coordinate_search") != null)
+    .result.tools as $tools |
+    ($tools | map(.name) | index("naver_map_search") != null) and
+    ($tools | map(.name) | index("naver_map_coordinate_search") != null) and
+    (($tools | map(select(.name == "naver_map_search")) | first) as $keyword |
+      $keyword.title == "Search Naver Maps by keyword" and
+      ($keyword.description | contains("without numeric coordinates")) and
+      $keyword.annotations.readOnlyHint == true and
+      $keyword.annotations.openWorldHint == true and
+      $keyword.inputSchema.properties.page.minimum == 1 and
+      $keyword.inputSchema.properties.page.maximum == 5 and
+      $keyword.inputSchema.properties.page.default == 1 and
+      $keyword.outputSchema.type == "array" and
+      $keyword.outputSchema.items.properties.category.items.type == "string") and
+    (($tools | map(select(.name == "naver_map_coordinate_search")) | first) as $coordinate |
+      $coordinate.title == "Search Naver Maps near coordinates" and
+      ($coordinate.description | contains("both numeric coordinates")) and
+      $coordinate.annotations.readOnlyHint == true and
+      $coordinate.annotations.openWorldHint == true and
+      $coordinate.inputSchema.properties.longitude.minimum == -180 and
+      $coordinate.inputSchema.properties.longitude.maximum == 180 and
+      $coordinate.inputSchema.properties.latitude.minimum == -90 and
+      $coordinate.inputSchema.properties.latitude.maximum == 90 and
+      (($coordinate.inputSchema.required | index("longitude")) != null) and
+      (($coordinate.inputSchema.required | index("latitude")) != null))
   ' "$mcp_tools_response" >/dev/null \
-    || die "MCP tools/list did not expose both Naver search tools"
+    || die "MCP tools/list did not expose complete Naver tool metadata and schemas"
   validate_external_mcp
 
   ready_ms="$(( $(now_ms) - started ))"
@@ -580,6 +634,7 @@ main() {
   local after_request_snapshot after_idle_shutdown_snapshot after_restart_snapshot
   local after_restart_idle_shutdown_snapshot after_shutdown_snapshot restart_response_file
   local restart_http_code coordinate_http_code coordinate_result_count finished
+  local keyword_page2_result_count coordinate_page2_result_count
   after_request_snapshot="$(snapshot after_request_idle)"
   wait_for_worker_exit || die "Java worker did not stop within ${IDLE_WAIT_SECONDS}s"
   after_idle_shutdown_snapshot="$(snapshot after_idle_shutdown)"
@@ -611,6 +666,11 @@ main() {
     || die "coordinate MCP request did not return valid raw JSON"
   coordinate_result_count="$(validate_result_count "$coordinate_raw_file" "coordinate MCP request")"
   validate_result_schema "$coordinate_raw_file" "coordinate MCP request"
+  validate_pagination "naver_map_search" "$restart_raw_file" \
+    "$(jq -cn --arg query "$QUERY" '{query:$query}')" keyword 6
+  validate_pagination "naver_map_coordinate_search" "$coordinate_raw_file" \
+    "$(jq -cn --arg query "$COORDINATE_QUERY" --argjson longitude "$COORDINATE_LONGITUDE" --argjson latitude "$COORDINATE_LATITUDE" \
+      '{query:$query,longitude:$longitude,latitude:$latitude}')" coordinate 7
   wait_for_worker_exit || die "restarted Java worker did not stop after coordinate search within ${IDLE_WAIT_SECONDS}s"
   after_restart_idle_shutdown_snapshot="$(snapshot after_restart_idle_shutdown)"
 
@@ -641,6 +701,8 @@ main() {
     --argjson restart_result_count "$restart_result_count" \
     --argjson coordinate_http_status "$coordinate_http_code" \
     --argjson coordinate_result_count "$coordinate_result_count" \
+    --argjson keyword_page2_result_count "$keyword_page2_result_count" \
+    --argjson coordinate_page2_result_count "$coordinate_page2_result_count" \
     --arg http_code "$http_code" \
     --arg total_seconds "$total_seconds" \
     --arg run_status "$run_status" \
@@ -653,7 +715,7 @@ main() {
     --argjson after_restart_idle_shutdown "$after_restart_idle_shutdown_snapshot" \
     --argjson after_shutdown "$after_shutdown_snapshot" \
     --argjson samples "$samples" \
-    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,gateway_port:$gateway_port,headless:true},request:{type:"mcp_naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit,response_bytes:$response_bytes,response_valid_json:$response_valid_json,response_json_type:$response_json_type,response_result_count:$response_result_count},restart:{http_status:($restart_http_status|tonumber),response_result_count:$restart_result_count},coordinate_request:{http_status:($coordinate_http_status|tonumber),response_result_count:$coordinate_result_count},timing:{startup_ms:$startup_ms,gateway_startup_ms:$gateway_startup_ms,java_startup_ms:$java_startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_idle_shutdown:$after_idle_shutdown,after_restart:$after_restart,after_restart_idle_shutdown:$after_restart_idle_shutdown,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
+    '{schema_version:($schema_version|tonumber),captured_at_utc:$timestamp,status:$run_status,application:{jar:$jar,port:$port,gateway_port:$gateway_port,headless:true},request:{type:"mcp_naver_keyword_search",query:$query,page:1,http_status:($http_code|tonumber),curl_time_seconds:(if $total_seconds == "null" then null else ($total_seconds|tonumber) end),exit_code:$request_exit,response_bytes:$response_bytes,response_valid_json:$response_valid_json,response_json_type:$response_json_type,response_result_count:$response_result_count},restart:{http_status:($restart_http_status|tonumber),response_result_count:$restart_result_count},coordinate_request:{http_status:($coordinate_http_status|tonumber),response_result_count:$coordinate_result_count},pagination:{keyword:{page:2,response_result_count:$keyword_page2_result_count,new_place_ids:true},coordinate:{page:2,response_result_count:$coordinate_page2_result_count,new_place_ids:true}},timing:{startup_ms:$startup_ms,gateway_startup_ms:$gateway_startup_ms,java_startup_ms:$java_startup_ms,total_run_ms:$total_run_ms},snapshots:{before_start:$before,ready_idle:$ready,after_request_idle:$after_request,after_idle_shutdown:$after_idle_shutdown,after_restart:$after_restart,after_restart_idle_shutdown:$after_restart_idle_shutdown,after_shutdown:$after_shutdown},request_samples:$samples}' > "$output_file"
 
   printf 'Validated result counts: keyword=%s restart=%s coordinate=%s\n' \
     "$response_result_count" "$restart_result_count" "$coordinate_result_count"

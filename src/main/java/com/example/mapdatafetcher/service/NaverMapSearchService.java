@@ -6,6 +6,7 @@ import com.example.mapdatafetcher.dto.NaverMapSearchRequest;
 import com.example.mapdatafetcher.exception.CaptureException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -14,14 +15,13 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.logging.Level;
 import org.openqa.selenium.By;
 import org.openqa.selenium.Keys;
 import org.openqa.selenium.PageLoadStrategy;
+import org.openqa.selenium.StaleElementReferenceException;
 import org.openqa.selenium.TimeoutException;
-import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebDriverException;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
@@ -228,7 +228,7 @@ public class NaverMapSearchService {
 
     try {
       switchToSearchIframe(driver);
-      return extractGraphqlItems(captureGraphqlByPage(driver, targetPage));
+      return capturePaginatedItems(driver, targetPage);
     } catch (CaptureException exception) {
       throw exception;
     } catch (Exception exception) {
@@ -236,47 +236,62 @@ public class NaverMapSearchService {
     }
   }
 
-  private JsonNode navigateToPageAndCaptureGraphql(ChromeDriver driver, int targetPage)
-      throws Exception {
-    WebDriverWait wait = new WebDriverWait(driver, ELEMENT_WAIT_TIMEOUT);
-    By paginationContainerSelector = By.xpath("//*[@id='app-root']/div/div[2]/div[2]");
-    By pageButtonSelector =
-        By.xpath("//*[@id='app-root']/div/div[2]/div[2]/a[normalize-space(text()) != '']");
+  private JsonNode capturePaginatedItems(ChromeDriver driver, int targetPage) throws Exception {
+    By targetSelector = By.linkText(String.valueOf(targetPage));
+    WebDriverWait wait = new WebDriverWait(driver, SEARCH_RESPONSE_TIMEOUT);
+    wait.ignoring(StaleElementReferenceException.class);
 
-    try {
-      wait.until(ExpectedConditions.visibilityOfElementLocated(paginationContainerSelector));
-    } catch (TimeoutException exception) {
-      throw new IllegalStateException("Pagination bar did not appear", exception);
+    // Naver renders these links on the server before React hydrates them. A
+    // merely visible/clickable link follows its href and reloads page 1.
+    wait.until(
+        ignored -> {
+          WebElement candidate =
+              ExpectedConditions.elementToBeClickable(By.linkText("1")).apply(driver);
+          if (candidate == null) {
+            return null;
+          }
+          boolean hasClickHandler =
+              Boolean.TRUE.equals(
+                  driver.executeScript(
+                      "const el=arguments[0]; return Object.keys(el).some(key => "
+                          + "(key.startsWith('__reactProps$') || key.startsWith('__reactEventHandlers$')) "
+                          + "&& typeof el[key].onClick === 'function');",
+                      candidate));
+          return hasClickHandler ? candidate : null;
+        });
+    if (driver.findElements(targetSelector).isEmpty()) {
+      throw new CaptureException(
+          "page_unavailable", "pagination", "Could not find Naver result page " + targetPage, null);
     }
-
-    Optional<WebElement> targetButton = findPageButton(driver, targetPage, pageButtonSelector);
-    if (targetButton.isEmpty()) {
-      throw new IllegalStateException("Requested page button not found: " + targetPage);
-    }
-
-    clearPerformanceLogs(driver);
-    WebElement clickableButton;
-    try {
-      clickableButton = wait.until(ExpectedConditions.elementToBeClickable(targetButton.get()));
-    } catch (TimeoutException exception) {
-      throw new IllegalStateException(
-          "Target page button was not clickable: " + targetPage, exception);
-    }
-
-    clickableButton.click();
-    try {
+    String selectedClass = driver.findElement(By.linkText("1")).getAttribute("class");
+    LOGGER.info("Naver pagination controls ready for page {}", targetPage);
+    for (int attempt = 0; attempt < 2; attempt++) {
+      clearPerformanceLogs(driver);
+      driver.findElement(targetSelector).click();
       wait.until(
-          driverInstance ->
-              findSelectedPageButton(driverInstance, pageButtonSelector)
-                  .map(button -> String.valueOf(targetPage).equals(button.getText().trim()))
-                  .orElse(false));
-    } catch (TimeoutException exception) {
-      throw new IllegalStateException(
-          "Page selection did not change after click: " + targetPage, exception);
+          ignored ->
+              selectedClass.equals(driver.findElement(targetSelector).getAttribute("class")));
+      LOGGER.info("Naver pagination selected page {}", targetPage);
+      try {
+        return extractGraphqlItems(
+            parseGraphqlResponse(
+                waitForSearchResponseBody(
+                    driver, properties.graphqlResponseUrlKeyword(), targetPage)));
+      } catch (CaptureException exception) {
+        if (attempt > 0 || !"request_aborted".equals(exception.category())) {
+          throw exception;
+        }
+        // An aborted fetch cannot produce a body. Re-select once in the same
+        // initialized browser; never return the old page's cached results.
+        LOGGER.warn("Naver aborted the page {} request; re-selecting once", targetPage);
+        By firstPageSelector = By.linkText("1");
+        driver.findElement(firstPageSelector).click();
+        wait.until(
+            ignored ->
+                selectedClass.equals(driver.findElement(firstPageSelector).getAttribute("class")));
+      }
     }
-
-    return parseGraphqlResponse(
-        waitForSearchResponseBody(driver, properties.graphqlResponseUrlKeyword()));
+    throw new IllegalStateException("Pagination capture did not complete");
   }
 
   private JsonNode parseGraphqlResponse(String responseBody) {
@@ -288,39 +303,11 @@ public class NaverMapSearchService {
     }
   }
 
-  private JsonNode captureGraphqlByPage(ChromeDriver driver, int targetPage) throws Exception {
-    if (targetPage <= 1) {
-      navigateToPageAndCaptureGraphql(driver, 2);
-      return navigateToPageAndCaptureGraphql(driver, 1);
-    }
-
-    return navigateToPageAndCaptureGraphql(driver, targetPage);
-  }
-
   private void switchToSearchIframe(ChromeDriver driver) {
     driver.switchTo().defaultContent();
     WebDriverWait wait = new WebDriverWait(driver, ELEMENT_WAIT_TIMEOUT);
     wait.until(
         ExpectedConditions.frameToBeAvailableAndSwitchToIt(By.cssSelector("iframe#searchIframe")));
-  }
-
-  private Optional<WebElement> findPageButton(
-      WebDriver driver, int targetPage, By pageButtonSelector) {
-    return driver.findElements(pageButtonSelector).stream()
-        .filter(element -> String.valueOf(targetPage).equals(element.getText().trim()))
-        .findFirst();
-  }
-
-  private Optional<WebElement> findSelectedPageButton(WebDriver driver, By pageButtonSelector) {
-    return driver.findElements(pageButtonSelector).stream()
-        .filter(
-            element -> {
-              String className = element.getAttribute("class");
-              String ariaCurrent = element.getAttribute("aria-current");
-              return (className != null && className.contains("qxokY"))
-                  || "page".equalsIgnoreCase(ariaCurrent);
-            })
-        .findFirst();
   }
 
   private void clearPerformanceLogs(ChromeDriver driver) {
@@ -420,10 +407,21 @@ public class NaverMapSearchService {
 
   private String waitForSearchResponseBody(ChromeDriver driver, String responseUrlKeyword)
       throws Exception {
+    return waitForSearchResponseBody(driver, responseUrlKeyword, 0);
+  }
+
+  private String waitForSearchResponseBody(
+      ChromeDriver driver, String responseUrlKeyword, int targetPage) throws Exception {
     Instant deadline = Instant.now().plus(SEARCH_RESPONSE_TIMEOUT);
     Set<String> finishedRequestIds = new HashSet<>();
     Set<String> failedRequestIds = new HashSet<>();
+    Set<String> abortedRequestIds = new HashSet<>();
+    Set<String> observedResponsePaths = new java.util.LinkedHashSet<>();
+    Set<String> observedRequestPaths = new java.util.LinkedHashSet<>();
+    Set<String> failedResponsePaths = new java.util.LinkedHashSet<>();
+    Map<String, String> requestPaths = new java.util.HashMap<>();
     Map<String, ResponseCandidate> candidates = new java.util.LinkedHashMap<>();
+    Map<String, Integer> matchingOperations = new java.util.HashMap<>();
     boolean retryUsed = false;
     int bodyReadFailures = 0;
 
@@ -444,9 +442,41 @@ public class NaverMapSearchService {
         String method = message.path("method").asText();
         JsonNode params = message.path("params");
         String requestId = params.path("requestId").asText();
-        if ("Network.responseReceived".equals(method)) {
+        if ("Network.requestWillBeSent".equals(method)) {
+          String requestUrl = params.path("request").path("url").asText();
+          if (targetPage > 0 && requestUrl.contains(responseUrlKeyword)) {
+            JsonNode payload =
+                objectMapper.readTree(params.path("request").path("postData").asText("null"));
+            int index = matchingPageOperation(payload, targetPage);
+            if (index >= 0) {
+              matchingOperations.put(requestId, index);
+              LOGGER.info("Observed GraphQL request for page {}", targetPage);
+            }
+          }
+          if (!requestId.isBlank() && !requestUrl.isBlank()) {
+            requestPaths.put(requestId, safeResponsePath(requestUrl));
+          }
+          if (!requestUrl.isBlank()
+              && isDynamicEndpoint(requestUrl)
+              && observedRequestPaths.size() < 80) {
+            observedRequestPaths.add(safeResponsePath(requestUrl));
+          }
+        } else if ("Network.responseReceived".equals(method)) {
           String url = params.path("response").path("url").asText();
-          if (!requestId.isBlank() && url.contains(responseUrlKeyword)) {
+          if (!url.isBlank()) {
+            String responsePath = safeResponsePath(url);
+            String normalizedResponsePath = responsePath.toLowerCase(java.util.Locale.ROOT);
+            if ((normalizedResponsePath.contains("graphql")
+                    || normalizedResponsePath.contains("/api/")
+                    || normalizedResponsePath.contains("search"))
+                && observedResponsePaths.size() < 50) {
+              observedResponsePaths.add(
+                  responsePath + " status=" + params.path("response").path("status").asInt(-1));
+            }
+          }
+          if (!requestId.isBlank()
+              && url.contains(responseUrlKeyword)
+              && (targetPage == 0 || matchingOperations.containsKey(requestId))) {
             double status = params.path("response").path("status").asDouble(-1);
             candidates.put(requestId, new ResponseCandidate(status));
           }
@@ -454,7 +484,27 @@ public class NaverMapSearchService {
           finishedRequestIds.add(requestId);
         } else if ("Network.loadingFailed".equals(method)) {
           failedRequestIds.add(requestId);
+          if ("net::ERR_ABORTED".equals(params.path("errorText").asText())) {
+            abortedRequestIds.add(requestId);
+          }
+          if (failedResponsePaths.size() < 20) {
+            failedResponsePaths.add(
+                requestPaths.getOrDefault(requestId, "<unknown-path>")
+                    + ": "
+                    + params.path("errorText").asText("unknown network error")
+                    + ", type="
+                    + params.path("type").asText("unknown")
+                    + ", blockedReason="
+                    + params.path("blockedReason").asText("none"));
+          }
         }
+      }
+
+      if (targetPage > 0
+          && !matchingOperations.isEmpty()
+          && abortedRequestIds.containsAll(matchingOperations.keySet())) {
+        throw new CaptureException(
+            "request_aborted", "response_matching", "Naver aborted the requested page fetch", null);
       }
 
       for (Map.Entry<String, ResponseCandidate> entry : candidates.entrySet()) {
@@ -493,6 +543,20 @@ public class NaverMapSearchService {
           candidate.bodyReadAttempted = true;
           continue;
         }
+        if (targetPage > 0) {
+          JsonNode response = objectMapper.readTree(bodyText);
+          if (response.isArray()) {
+            JsonNode operationResponse = response.get(matchingOperations.get(requestId));
+            if (operationResponse == null) {
+              throw new CaptureException(
+                  "invalid_response",
+                  "response_body",
+                  "Paginated response did not match the requested operation",
+                  null);
+            }
+            return operationResponse.toString();
+          }
+        }
         return bodyText;
       }
 
@@ -521,13 +585,76 @@ public class NaverMapSearchService {
                         && candidate.status < 300);
     String failureStage = hasBodyCandidate ? "response_body" : "response_matching";
     LOGGER.warn(
-        "Naver response capture timed out: matched={}, finished={}, failed={}, bodyReadFailures={}",
+        "Naver response capture timed out: expectedPath={}, matched={}, finished={}, failed={}, bodyReadFailures={}, observedRequests={}, observedPaths={}, networkFailures={}",
+        responseUrlKeyword,
         candidates.size(),
         finishedCount,
         failedCount,
-        bodyReadFailures);
+        bodyReadFailures,
+        observedRequestPaths,
+        observedResponsePaths,
+        failedResponsePaths);
     throw new CaptureException(
         "timeout", failureStage, "Timed out while waiting for Naver search response", null);
+  }
+
+  private int matchingPageOperation(JsonNode payload, int targetPage) {
+    if (payload == null) {
+      return -1;
+    }
+    if (!payload.isArray()) {
+      return hasPageOffset(payload.path("variables"), targetPage) ? 0 : -1;
+    }
+    for (int index = 0; index < payload.size(); index++) {
+      if (hasPageOffset(payload.get(index).path("variables"), targetPage)) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  private boolean hasPageOffset(JsonNode node, int targetPage) {
+    int display = node.path("display").asInt(0);
+    if (display > 0 && node.path("start").asInt(-1) == (targetPage - 1) * display + 1) {
+      return true;
+    }
+    for (JsonNode child : node) {
+      if (hasPageOffset(child, targetPage)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private String safeResponsePath(String url) {
+    try {
+      URI uri = URI.create(url);
+      String path = uri.getPath();
+      if (path == null || path.isBlank()) {
+        path = "/";
+      } else if (path.startsWith("/p/search/")) {
+        path = "/p/search/{query}";
+      }
+      String host = uri.getHost();
+      return (host == null ? "<unknown-host>" : host) + path;
+    } catch (IllegalArgumentException exception) {
+      return "<unparseable-url>";
+    }
+  }
+
+  private boolean isDynamicEndpoint(String url) {
+    try {
+      String path = URI.create(url).getPath();
+      if (path == null || path.isBlank()) {
+        return false;
+      }
+      String normalizedPath = path.toLowerCase(java.util.Locale.ROOT);
+      return !normalizedPath.contains("/assets/")
+          && !normalizedPath.contains("/resource/api/v2/image/")
+          && !normalizedPath.matches(".*\\.(js|css|png|jpe?g|webp|svg|woff2?|ttf|ico)$");
+    } catch (IllegalArgumentException exception) {
+      return false;
+    }
   }
 
   private String readResponseBody(ChromeDriver driver, String requestId) {

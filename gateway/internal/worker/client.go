@@ -184,6 +184,8 @@ func (c *JavaClient) getNaverJSON(
 func validWorkerFailureLabels(category, stage string) bool {
 	validCategories := map[string]bool{
 		"capture_error":    true,
+		"request_aborted":  true,
+		"page_unavailable": true,
 		"invalid_response": true,
 		"timeout":          true,
 		"cancelled":        true,
